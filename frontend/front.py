@@ -46,7 +46,7 @@ with col2:
     * nii - Формат файла исследования .nii""")
 
 # Логотип в сайдбаре
-st.sidebar.image("logo.jpg", use_container_width=True)
+st.sidebar.image("logo.png", use_container_width=True)
 
 # Выбор маркера в сайдбаре
 generation_mode = st.sidebar.radio(
