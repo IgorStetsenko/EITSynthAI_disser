@@ -16,6 +16,8 @@ from pydicom.filebase import DicomBytesIO
 from PIL import Image
 from scipy.ndimage import label
 from pydicom import config as config_for_disable_dicom_warnings
+from scipy.ndimage import gaussian_filter
+from scipy import ndimage
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -256,13 +258,13 @@ def search_number_axial_slice(detections, custom_number_slise=0, image_width=512
         # Сортировка по оси Y (по второму элементу каждого бокса)
         sorted_right_side_coordinates = sorted(right_side_coordinates, key=lambda x: x[1])
         logger.info(f"✅ Функция search_number_axial_slice | sorted_right_side_coordinates (координаты правых рёбер) {sorted_right_side_coordinates}")
-        # Вычисляем номер среза между 6 и 7 ребром (нумерация рёбер с нуля)
-        number_axial_slice = int((abs(sorted_right_side_coordinates[5][1] + sorted_right_side_coordinates[6][1])) / 2)
+        # Вычисляем номер среза между 5 и 6 ребром (нумерация рёбер с нуля)
+        number_axial_slice = int((abs(sorted_right_side_coordinates[4][1] + sorted_right_side_coordinates[5][1])) / 2)
         # На всякий получаем номер шестого ребра
-        number_axial_slice_list.append(int(sorted_right_side_coordinates[5][1]))
+        number_axial_slice_list.append(int(sorted_right_side_coordinates[4][1]))
         # На всякий получаем номер седьмого ребра
-        number_axial_slice_list.append(int(sorted_right_side_coordinates[6][1]))
-        # Корректируем номер среза между 6 и 7 ребром, если выбран режим с коррекцией. Иначе прибавляется 0
+        number_axial_slice_list.append(int(sorted_right_side_coordinates[5][1]))
+        # Корректируем номер среза между 5 и 6 ребром, если выбран режим с коррекцией. Иначе прибавляется 0
         number_axial_slice_list.append(number_axial_slice + custom_number_slise)
     except:
         logger.error(f"🔴 Ошибка в функции search_number_axial_slice | sorted_right_side_coordinates_len {len(sorted_right_side_coordinates)} | sorted_right_side_coordinates (координаты правых рёбер) {sorted_right_side_coordinates}")
@@ -434,20 +436,26 @@ def overlay_segmentation_masks(segmentation_dict):
     return overlay
 
 
-def create_segmentations_masks(axial_segmentations, img_size=512):
-    """
-    Создает цветные маски сегментации для разных типов тканей из результатов YOLO модели.
 
-    Функция преобразует выходные данные модели сегментации в набор цветных масок,
+
+def create_segmentations_masks(mask, img_size=None):
+    """
+    Создает цветные маски сегментации для разных типов тканей из результатов UNet модели.
+
+    Функция преобразует выходную маску модели сегментации в набор цветных масок,
     где каждый тип ткани представлен своим цветом. Возвращает словарь с отдельными
     изображениями для каждого класса.
 
     Args:
-        axial_segmentations (ultralytics.yolo.engine.results.Results):
-            Результаты работы YOLO модели сегментации, содержащие:
-            - masks: тензоры с масками сегментации
-            - boxes: координаты bounding boxes и классы объектов
-        img_size (int, optional): Размер выходных изображений. По умолчанию 512.
+        mask (numpy.ndarray): Маска сегментации от UNet модели,
+            содержащая значения классов 0-4:
+            0 - фон (игнорируется)
+            1 - костная ткань
+            2 - мышечная ткань
+            3 - жировая ткань
+            4 - легочная ткань
+        img_size (int, optional): Размер выходных изображений.
+            Если не указан, берётся из shape маски.
 
     Returns:
         dict: Словарь с цветными масками для каждого класса тканей, где ключи:
@@ -456,27 +464,38 @@ def create_segmentations_masks(axial_segmentations, img_size=512):
             - "lung" - легочная ткань (голубой цвет)
             - "adipose" - жировая ткань (желтый цвет)
         Каждая маска представляет собой numpy.ndarray формата (H, W, 3) dtype uint8.
-
-    Note:
-        - Предполагается определенное соответствие между class_id и типами тканей:
-            0: костная, 1: мышечная, 2: легочная, 3: жировая
-        - Если модель возвращает неизвестные class_id, они игнорируются
-        - Для визуализации используются полупрозрачные цвета
+        В случае ошибки возвращается пустой список.
     """
     try:
         # Цветовая схема для разных типов тканей (BGR формат)
         clrs = {
-            "adipose": (0, 255, 255),  # Желтый для жировой ткани
-            "bone": (255, 255, 255),  # Белый для костной ткани
-            "muscles": (0, 0, 255),  # Красный для мышечной ткани
-            "lung": (255, 255, 0)  # Голубой для легочной ткани
+            "adipose": (0, 255, 255),   # Желтый для жировой ткани
+            "bone": (255, 255, 255),    # Белый для костной ткани
+            "muscles": (0, 0, 255),     # Красный для мышечной ткани
+            "lung": (255, 255, 0)       # Голубой для легочной ткани
         }
 
-        # Получаем данные из результатов YOLO
-        mask_coords_list = axial_segmentations.masks.data  # Тензоры с координатами масок
-        class_ids = axial_segmentations.boxes.cls.cpu().numpy()  # ID классов в numpy массиве
-        img_size = int(axial_segmentations.orig_shape[0])
-        logger.info(f"✅ Функция create_segmentations_masks | img_size {img_size}")
+        # Соответствие class_id -> имя класса
+        id_to_name = {
+            1: "bone",
+            2: "muscles",
+            3: "adipose",
+            4: "lung"
+        }
+
+        # Приводим маску к numpy, если вдруг пришёл тензор
+        if hasattr(mask, 'cpu'):
+            mask = mask.cpu().numpy()
+        mask = numpy.asarray(mask, dtype=numpy.uint8)
+
+        h, w = mask.shape[:2]
+        if img_size is None:
+            img_size = h
+
+        # Если размер маски не совпадает с нужным — ресайзим
+        if mask.shape[0] != img_size or mask.shape[1] != img_size:
+            mask = cv2.resize(mask, (img_size, img_size), interpolation=cv2.INTER_NEAREST)
+
         # Инициализируем словарь для хранения масок по классам
         class_images = {
             "bone": numpy.zeros((img_size, img_size, 3), dtype=numpy.uint8),
@@ -485,42 +504,18 @@ def create_segmentations_masks(axial_segmentations, img_size=512):
             "adipose": numpy.zeros((img_size, img_size, 3), dtype=numpy.uint8)
         }
 
-        # Обрабатываем каждую маску в результатах
-        for i, mask in enumerate(mask_coords_list):
-            # Конвертируем тензор маски в numpy array (если это тензор)
-            if torch.is_tensor(mask):
-                mask = mask.cpu().numpy()
-
-            # Получаем class_id для текущей маски
-            class_id = int(class_ids[i])  # Приводим к int для безопасности
-
-            # Определяем имя класса по его ID
-            if class_id == 0:
-                class_name = "bone"
-            elif class_id == 1:
-                class_name = "muscles"
-            elif class_id == 2:
-                class_name = "lung"
-            elif class_id == 3:
-                class_name = "adipose"
-            else:
-                continue  # Пропускаем неизвестные классы
-
-            # Получаем цвет для текущего класса
+        # Для каждого класса формируем цветную маску
+        for class_id, class_name in id_to_name.items():
             color = clrs[class_name]
-
-            # Создаем цветную маску (3-канальное изображение)
             colored_mask = numpy.zeros((img_size, img_size, 3), dtype=numpy.uint8)
-            # Закрашиваем область маски соответствующим цветом
-            colored_mask[mask > 0] = color
-
-            # Добавляем маску к соответствующему изображению класса
-            # Используем cv2.add для корректного сложения изображений
+            colored_mask[mask == class_id] = color
             class_images[class_name] = cv2.add(class_images[class_name], colored_mask)
-    except:
-        logger.error(f"🔴 Ошибка в функции create_segmentations_masks | {axial_segmentations}")
-        class_images = []
-    return class_images
+
+        return class_images
+
+    except Exception as e:
+        logger.error(f"🔴 Ошибка в функции create_segmentations_masks | {e}")
+        return []
 
 
 def get_axial_slice_body_mask(ds):
@@ -1058,6 +1053,28 @@ def create_answer(segmentation_masks_full_image, segmentation_results_cnt, segme
         logger.error(f"🔴 Ошибка в функции create_answer")
     return JSONResponse(content=answer)
 
+def correct_nifti_orientation(volume, affine, target_plane='axial'):
+    """Корректирует ориентацию NIfTI volume."""
+    try:
+        current_ornt = nib.orientations.io_orientation(affine)
+        target_ornt_ras = numpy.array([[0, 1], [1, 1], [2, 1]])
+        transform_to_ras = nib.orientations.ornt_transform(current_ornt, target_ornt_ras)
+        volume_ras = nib.orientations.apply_orientation(volume, transform_to_ras)
+
+        if target_plane == 'axial':
+            volume_corrected = numpy.transpose(volume_ras, (2, 1, 0))
+        elif target_plane == 'coronal':
+            volume_corrected = numpy.transpose(volume_ras, (1, 2, 0))
+        elif target_plane == 'sagittal':
+            volume_corrected = numpy.transpose(volume_ras, (0, 2, 1))
+        else:
+            volume_corrected = volume_ras
+
+        return volume_corrected
+
+    except Exception as e:
+        print(f"⚠️ Ошибка коррекции NIfTI ориентации: {e}")
+        return volume
 
 def get_nii_mean_slice(zip_file):
     """
@@ -1086,7 +1103,8 @@ def get_nii_mean_slice(zip_file):
                             tmp_file_path = tmp_file.name
 
                         nii_img = nib.load(tmp_file_path)
-                        data = nii_img.get_fdata().astype(numpy.int16)
+                        data = nii_img.get_fdata().astype(numpy.float32)
+                        
 
                         # Извлекаем pixel spacing из заголовка
                         header = nii_img.header
@@ -1103,7 +1121,7 @@ def get_nii_mean_slice(zip_file):
                         slice_mean = int(data.shape[-1] / 2)
                         slise_save = data[:, :, slice_mean]
                         slise_save = cv2.rotate(slise_save, cv2.ROTATE_90_CLOCKWISE)
-
+                        slise_save = numpy.ascontiguousarray(slise_save)
                         break  # Обрабатываем первый подходящий файл
 
                 except Exception as e:
@@ -1285,7 +1303,7 @@ def get_axial_slice_size(cv2_image: numpy.ndarray, default_size: int = 512) -> i
 
     Parameters
     ----------
-    cv2_image : np.ndarray
+    cv2_image : numpy.ndarray
         Входное изображение в формате NumPy array
     default_size : int, optional
         Размер по умолчанию (по умолчанию 512)
@@ -1305,3 +1323,230 @@ def get_axial_slice_size(cv2_image: numpy.ndarray, default_size: int = 512) -> i
 
     except (AttributeError, IndexError, TypeError):
         return default_size
+    
+def gaussian_membership(x, mu, sigma):
+    """Гауссова функция принадлежности."""
+    return numpy.exp(-0.5 * ((x - mu) / sigma) ** 2)
+
+
+def get_only_body_mask(hu_img):
+    """Получение маски тела."""
+    hu_img = numpy.ascontiguousarray(hu_img, dtype=numpy.float32)
+
+    kernel = numpy.ones((5, 5), numpy.uint8)
+    only_body_mask = numpy.where((hu_img > -500) & (hu_img < 1000), 1, 0).astype(numpy.uint8)
+    only_body_mask = cv2.morphologyEx(only_body_mask, cv2.MORPH_OPEN, kernel)
+    contours, _ = cv2.findContours(only_body_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return numpy.zeros_like(only_body_mask)
+    max_contour = max(contours, key=cv2.contourArea)
+    mask = numpy.zeros_like(only_body_mask)
+    cv2.drawContours(mask, [max_contour], -1, 255, -1)
+    kernel_erode = numpy.ones((3, 3), numpy.uint8)
+    return cv2.erode(mask, kernel_erode, iterations=1)
+
+def create_tissue_probability_maps(img, sigma_blur=1.0, body_mask=None):
+    """
+    Создаёт вероятностные карты для четырёх тканей с учётом маски тела.
+    """
+    img_smooth = gaussian_filter(img, sigma=sigma_blur)
+
+    # Априорные параметры (можно сделать адаптивными)
+    tissue_params = {
+        'air': (-900, 100),
+        'fat': (-100, 60),
+        'muscle': (40, 50),
+        'bone': (800, 400)
+    }
+
+    W_air = gaussian_membership(img_smooth, *tissue_params['air'])
+    W_fat = gaussian_membership(img_smooth, *tissue_params['fat'])
+    W_muscle = gaussian_membership(img_smooth, *tissue_params['muscle'])
+    W_bone = gaussian_membership(img_smooth, *tissue_params['bone'])
+
+    # Применяем маску тела, если задана
+    if body_mask is not None:
+        W_air *= body_mask
+        W_fat *= body_mask
+        W_muscle *= body_mask
+        W_bone *= body_mask
+
+    # Нормализация весов
+    W_sum = W_air + W_fat + W_muscle + W_bone + 1e-8
+    W_air /= W_sum
+    W_fat /= W_sum
+    W_muscle /= W_sum
+    W_bone /= W_sum
+
+    return W_air, W_fat, W_muscle, W_bone
+
+
+def estimate_tissue_params(img, W_air, W_fat, W_muscle, W_bone, threshold=0.7, body_mask=None):
+    """
+    Оценивает mu и sigma для каждой ткани на основе пикселей с высокой принадлежностью.
+    """
+    params = {}
+    tissues = ['air', 'fat', 'muscle', 'bone']
+    weight_maps = [W_air, W_fat, W_muscle, W_bone]
+
+    for tissue, weight_map in zip(tissues, weight_maps):
+        # Применяем маску тела, если нужна
+        if body_mask is not None:
+            weight_map = weight_map * body_mask
+
+        mask = weight_map > threshold
+        if numpy.sum(mask) == 0:
+            # Если нет подходящих пикселей — используем априорное значение
+            print(f"Предупреждение: нет пикселей для {tissue}. Используем априори.")
+            defaults = {
+                'air': (-900, 100),
+                'fat': (-100, 60),
+                'muscle': (40, 50),
+                'bone': (800, 400)
+            }
+            mu_default, sigma_default = defaults[tissue]
+            params[tissue] = {'mu': mu_default, 'sigma': sigma_default}
+        else:
+            values = img[mask]
+            mu_est = numpy.mean(values)
+            sigma_est = numpy.std(values) + 1e-5
+            params[tissue] = {'mu': mu_est, 'sigma': sigma_est}
+
+    return params
+
+def normalize_to_uint8(img, lower_percentile=1, upper_percentile=99):
+    """Адаптивная нормализация для визуализации (из compare_normalization_new_metrics.py)."""
+    img = numpy.ascontiguousarray(img, dtype=numpy.float32)
+    p_low = numpy.percentile(img, lower_percentile)
+    p_high = numpy.percentile(img, upper_percentile)
+    if p_high - p_low < 1e-7:
+        return numpy.zeros_like(img, dtype=numpy.uint8)
+    img_clipped = numpy.clip(img, p_low, p_high)
+    return ((img_clipped - p_low) / (p_high - p_low) * 255).astype(numpy.uint8)
+
+def normalize_adaptive(img, W_air, W_fat, W_muscle, W_bone):
+    """
+    Применяет локальную нормализацию на основе 4 тканей.
+    Сначала строит маску тела, затем оценивает параметры.
+    """
+    # Шаг 1: создать маску тела
+    body_mask = get_only_body_mask(img)
+
+    # Шаг 2: оценить параметры с учётом маски
+    norm_params = estimate_tissue_params(
+        img, W_air, W_fat, W_muscle, W_bone,
+        threshold=0.7,
+        body_mask=body_mask
+    )
+
+    # print("Оценённые параметры нормализации:")
+    # for t, p in norm_params.items():
+    #     print(f"{t}: mu={p['mu']:.1f}, sigma={p['sigma']:.1f}")
+
+    # Нормализованные значения для каждой ткани
+    I_air_norm = (img - norm_params['air']['mu']) / norm_params['air']['sigma']
+    I_fat_norm = (img - norm_params['fat']['mu']) / norm_params['fat']['sigma']
+    I_muscle_norm = (img - norm_params['muscle']['mu']) / norm_params['muscle']['sigma']
+    I_bone_norm = (img - norm_params['bone']['mu']) / norm_params['bone']['sigma']
+
+    # Взвешенная сумма по всем четырём тканям
+    I_normalized = (
+            W_air * I_air_norm +
+            W_fat * I_fat_norm +
+            W_muscle * I_muscle_norm +
+            W_bone * I_bone_norm
+    )
+
+    # Ограничиваем выбросы (опционально)
+    I_normalized = numpy.clip(I_normalized, -5, 5)
+
+    return normalize_to_uint8(I_normalized)
+
+
+def clean_segmentation_masks(axial_segmentations: numpy.ndarray, only_body_mask: numpy.ndarray) -> numpy.ndarray:
+    """
+    Очистка масок сегментации КТ-снимка.
+    """
+    cleaned = axial_segmentations.copy()
+    
+    # Нормализуем only_body_mask к бинарному виду
+    body_mask_binary = (only_body_mask > 127).astype(numpy.uint8)
+    
+    # 1. Отсекаем все объекты за пределами only_body_mask
+    cleaned[body_mask_binary == 0] = 0
+    
+    # 2. Находим контуры легких и убираем кости ВНУТРИ них
+    lungs_mask = (cleaned == 4).astype(numpy.uint8)
+    bone_mask = (cleaned == 1).astype(numpy.uint8)
+    
+    # Находим контуры легких
+    lung_contours, _ = cv2.findContours(lungs_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Для каждого контура легкого
+    for lung_contour in lung_contours:
+        if cv2.contourArea(lung_contour) < 1000:  # Пропускаем мелкие артефакты
+            continue
+            
+        # Создаем маску одного легкого
+        lung_roi_mask = numpy.zeros_like(lungs_mask)
+        cv2.drawContours(lung_roi_mask, [lung_contour], -1, color=1, thickness=cv2.FILLED)
+        
+        # Находим кости внутри этого легкого
+        bones_inside_lung = bone_mask & lung_roi_mask
+        
+        # Если есть кости внутри легкого - убираем их
+        if numpy.sum(bones_inside_lung) > 0:
+            cleaned[bones_inside_lung > 0] = 4  # Заменяем на легкие
+    
+    # 3. Находим контуры тела и убираем кости СНАРУЖИ тела
+    body_contours, _ = cv2.findContours(body_mask_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Создаем маску "внутри тела"
+    inside_body_mask = numpy.zeros_like(body_mask_binary)
+    for contour in body_contours:
+        if cv2.contourArea(contour) > 10000:  # Только большие контуры
+            cv2.drawContours(inside_body_mask, [contour], -1, color=1, thickness=cv2.FILLED)
+    
+    # Убираем все кости которые снаружи тела
+    outside_body = inside_body_mask == 0
+    cleaned[outside_body & (cleaned == 1)] = 0
+    
+    # 4. Убираем мелкие артефакты для всех классов
+    for class_id in [1, 2, 3, 4]:
+        class_mask = (cleaned == class_id).astype(numpy.uint8)
+        labeled, num_features = ndimage.label(class_mask)
+        
+        min_size = 200
+        for i in range(1, num_features + 1):
+            component_size = numpy.sum(labeled == i)
+            if component_size < min_size:
+                cleaned[labeled == i] = 0
+    
+    return cleaned
+
+
+def clean_segmentation_masks_advanced(axial_segmentations: numpy.ndarray, only_body_mask: numpy.ndarray) -> numpy.ndarray:
+    """
+    Расширенная версия с дополнительной проверкой мышц внутри легких.
+    """
+    cleaned = clean_segmentation_masks(axial_segmentations, only_body_mask)
+    
+    # Также проверяем мышцы внутри легких
+    lungs_mask = (cleaned == 4).astype(numpy.uint8)
+    muscles_mask = (cleaned == 2).astype(numpy.uint8)
+    
+    lung_contours, _ = cv2.findContours(lungs_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    for lung_contour in lung_contours:
+        if cv2.contourArea(lung_contour) < 1000:
+            continue
+            
+        lung_roi_mask = numpy.zeros_like(lungs_mask)
+        cv2.drawContours(lung_roi_mask, [lung_contour], -1, color=1, thickness=cv2.FILLED)
+        
+        muscles_inside_lung = muscles_mask & lung_roi_mask
+        
+        if numpy.sum(muscles_inside_lung) > 0:
+            cleaned[muscles_inside_lung > 0] = 4
+    
+    return cleaned

@@ -8,12 +8,15 @@ import supervision as sv
 import sys
 import numpy
 import matplotlib.pyplot as plt
+import traceback
+
+
 from ultralytics import YOLO
 from .utils import axial_to_sagittal, convert_to_3d, create_dicom_dict, search_number_axial_slice, \
     create_answer, classic_norm, draw_annotate, create_segmentations_masks, create_segmentation_results_cnt, \
     get_axial_slice_body_mask, create_segmentation_masks_full_image, get_axial_slice_body_mask_nii, get_nii_mean_slice, \
-    create_list_crd_from_color_output, get_pixel_spacing, create_color_output, get_axial_slice_size
-
+    create_list_crd_from_color_output, get_pixel_spacing, create_color_output, get_axial_slice_size, normalize_adaptive, \
+    clean_segmentation_masks_advanced, create_tissue_probability_maps
 from .mesh_tools.femm_generator import create_mesh
 
 from .femm_tools.synthetic_datasets_generator import simulate_EIT_monitoring_pyeit
@@ -30,6 +33,8 @@ sys.path.append(str(Path(__file__).parent))
 from .. import kt_service_config
 import zipfile
 import torch
+from dats_unet import DATSPredictor
+
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,32 +46,27 @@ class DICOMabc(abc.ABC):
 
     """
 
-    def __init__(self, ribs_model_path=None, axial_model_256_path=None, axial_model_512_path=None):
+    def __init__(self, ribs_model_path=None, axial_model_path=None):
         """
         Инициализация моделей для сегментации.
-        Загружает две версии модели (256 и 512), если пути не заданы — берётся из конфига.
         """
-        # Модель для сегментации рёбер
+        # Модель для сегментации рёбер (YOLO)
         if ribs_model_path:
             self.ribs_model_path = ribs_model_path
         else:
             self.ribs_model_path = kt_service_config.ribs_segm_model
         self.ribs_model = self._load_model(self.ribs_model_path)
 
-        # Модели для аксиальной сегментации (разные разрешения)
-        if axial_model_256_path:
-            self.axial_model_256_path = axial_model_256_path
+        # Новая модель для аксиальной сегментации (UNetWithDATL)
+        if axial_model_path:
+            self.axial_model_path = kt_service_config.axial_model_path
         else:
-            self.axial_model_256_path = kt_service_config.axial_slice_segm_model_256
+            self.axial_model_path = kt_service_config.axial_model_path
+            
+        # Импорт и инициализация обертки для новой нейросети
+        self.axial_model = DATSPredictor(weights_path=self.axial_model_path)
 
-        if axial_model_512_path:
-            self.axial_model_512_path = axial_model_512_path
-        else:
-            self.axial_model_512_path = kt_service_config.axial_slice_segm_model_512
 
-        # Загружаем обе модели заранее
-        self.axial_model_256 = self._load_model(self.axial_model_256_path)
-        self.axial_model_512 = self._load_model(self.axial_model_512_path)
 
     def _load_model(self, model_path):
         """Загружает YOLO-модель для сегментации."""
@@ -101,10 +101,16 @@ class DICOMabc(abc.ABC):
                 front_slice_mean = sagittal_view[:, :, front_slice_mean_num]  # Срез без нормализации
                 # Нормализуем пиксели в диапазоне 0....255
                 front_slice_norm = cv2.normalize(front_slice_mean, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+                W_air, W_fat, W_muscle, W_bone = create_tissue_probability_maps(front_slice_mean, sigma_blur=1.0)
+                front_slice_ada_norm = normalize_adaptive(front_slice_mean, W_air, W_fat, W_muscle, W_bone)
+                #cv2.imwrite('/app/generation_results/front_slice_ada_norm.jpg', front_slice_ada_norm)
+                logger.info("✅ Картинка сохранена")
             logger.info(f"✅ Выход функции _search_front_slise | размер front_slice_norm {front_slice_norm.shape}, размер img_3d {img_3d.shape}, i_slices_len {len(i_slices)}, номер выбранного среза {custom_number_slise}")
-        except:
+        except Exception as e:
+            print(f"{str(e)}")
             logger.error(f"🔴 Ошибка в функции _search_front_slise | i_slices_len {len(i_slices)}")
-        return front_slice_norm, img_3d, i_slices, custom_number_slise
+        return front_slice_norm, img_3d, i_slices, custom_number_slise, front_slice_ada_norm
+
 
     def _ribs_predict(self, front_slice):
         """
@@ -130,34 +136,28 @@ class DICOMabc(abc.ABC):
 
     def _axial_slice_predict(self, axial_slice):
         """
-        Выполняет сегментацию тканей тела на аксиальном срезе КТ с помощью предобученной модели.
+        Выполняет сегментацию тканей тела на аксиальном срезе КТ с помощью новой модели.
+        Возвращает готовую маску (numpy array) вместо YOLO results.
         """
+        logger.info(f"✅ axial_slice.shape {axial_slice.shape}")
         try:
-            # Конвертируем из BGR в RGB
-            axial_slice_rgb = cv2.cvtColor(axial_slice, cv2.COLOR_BGR2RGB)
-            
-            # Получаем целевой размер изображения
-            axial_slice_size = get_axial_slice_size(axial_slice)
-            
-            # Выбираем модель в зависимости от размера
-            if axial_slice_size == 256:
-                logger.info(f"✅ Выбрана модель на разрешение 256")
-                model = self.axial_model_256
-            else:
-                logger.info(f"✅ Выбрана модель на разрешение 512")
-                model = self.axial_model_512
-            
-            # Проверка доступности CUDA
-            logger.info(f"✅ Device name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
-            
             # Замер времени
             t1 = time.time()
-            results = model(axial_slice_rgb, conf=0.3, verbose=False, imgsz=axial_slice_size)[0]                
+            
+            # Получаем маску предсказанную нейросетью
+            results = self.axial_model.predict(axial_slice)
+                
             segmentation_time = round(time.time() - t1, 3)
             logger.info(f"⏱️ Время сегментации: {segmentation_time:.2f} seconds")
-        except:
-            logger.error(f"🔴 Ошибка в функции _axial_slice_predict | len_axial_slice {len(axial_slice)}")
+            logger.info(f"✅ Предсказана маска размером {results.shape}")
+            
+        except Exception as e:
+            logger.error(f"🔴 Ошибка в функции _axial_slice_predict | error: {str(e)}")
+            results = None
+            segmentation_time = 0.0
+            
         return results, segmentation_time
+    
 
     def _search_axial_slice(self, detections, i_slices, custom_number_slise=0):
         """
@@ -206,37 +206,42 @@ class DICOMSequencesToMask(DICOMabc):
         try:
             img_mesh = None
             saved_file_name, simulation_time = None, None
-            front_slice, img_3d, i_slices, _ = self._search_front_slise(zip_buffer)
+            front_slice, img_3d, i_slices, _, front_slice_ada_norm = self._search_front_slise(zip_buffer)
             ribs_detections = self._ribs_predict(front_slice)
             axial_slice, number_slice_eit_list = self._search_axial_slice(ribs_detections, i_slices)
-            axial_slice_norm = classic_norm(axial_slice[-1].pixel_array)
             only_body_mask = get_axial_slice_body_mask(axial_slice[-1])
+            W_air, W_fat, W_muscle, W_bone = create_tissue_probability_maps(axial_slice[-1].pixel_array, sigma_blur=1.0,
+                                                                    body_mask=only_body_mask)
+            axial_slice_norm = normalize_adaptive(axial_slice[-1].pixel_array, W_air, W_fat, W_muscle, W_bone)
+            # axial_slice_norm = classic_norm(axial_slice[-1].pixel_array)
+            
             pixel_spacing = get_pixel_spacing(axial_slice[-1])
             axial_slice_norm_body = cv2.bitwise_and(axial_slice_norm, axial_slice_norm,
                                                     mask=only_body_mask)
-            ribs_annotated_image = draw_annotate(ribs_detections, front_slice, number_slice_eit_list)
-            axial_segmentations, segmentation_time = self._axial_slice_predict(axial_slice_norm_body)
-            segmentation_masks_image = create_segmentations_masks(axial_segmentations)
+            ribs_annotated_image = draw_annotate(ribs_detections, front_slice_ada_norm, number_slice_eit_list)
+            axial_segmentations_mask, segmentation_time = self._axial_slice_predict(axial_slice_norm_body)
+
+
+
+            segmentation_masks_image = create_segmentations_masks(axial_segmentations_mask)
             color_output = create_color_output(segmentation_masks_image, only_body_mask)
             list_crd_from_color_output = create_list_crd_from_color_output(color_output, pixel_spacing, only_body_mask)
 
-            segmentation_results_cnt = create_segmentation_results_cnt(axial_segmentations)
+            segmentation_results_cnt = create_segmentation_results_cnt(axial_segmentations_mask)
             # img_mesh, meshdata = create_mesh(list_crd_from_color_output[:2], list_crd_from_color_output[2:])
             # img_mesh = cv2.flip(img_mesh, 0)
             segmentation_masks_full_image = create_segmentation_masks_full_image(
                 segmentation_masks_image, only_body_mask, ribs_annotated_image,
                 axial_slice_norm_body, img_mesh
             )
-            #simulation_results, saved_file_name, simulation_time = self.get_synthetic_dataset(meshdata)
-            # logger.info(f"segmentation_results_cnt    ++++++    {list_crd_from_color_output}")
-            generate_eit_dataset(list_crd_from_color_output)
+            #generate_eit_dataset(list_crd_from_color_output)
             answer = create_answer(segmentation_masks_full_image, segmentation_results_cnt, segmentation_time, saved_file_name, simulation_time)
 
 
 
         except Exception as e:
             logger.error("🔴 Ошибка в классе DICOMSequencesToMask, функция get_coordinate_slice_from_dicom")     
-            print(f"{str(e)}")
+            logger.error(f"функция get_coordinate_slice_from_dicom {traceback.format_exc()}")
         return answer
 
     def get_synthetic_dataset(self, meshdata):
@@ -436,24 +441,40 @@ class NIIToMask(DICOMSequencesToMask):
             pixel_spacing = [0.662, 0.662]  
             with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
                 nii_mean_slice, pixel_spacing = get_nii_mean_slice(zip_file)
-                axial_slice_norm = classic_norm(nii_mean_slice)
-                axial_slice_norm = cv2.rotate(axial_slice_norm, cv2.ROTATE_180)
                 only_body_mask = get_axial_slice_body_mask_nii(nii_mean_slice)
+                W_air, W_fat, W_muscle, W_bone = create_tissue_probability_maps(nii_mean_slice, sigma_blur=1.0,
+                                                                                    body_mask=only_body_mask)
+                axial_slice_norm = normalize_adaptive(nii_mean_slice, W_air, W_fat, W_muscle, W_bone)
+
+                # axial_slice_norm = classic_norm(nii_mean_slice)
+                # axial_slice_norm = cv2.rotate(axial_slice_norm, cv2.ROTATE_180)
+                
                 axial_slice_norm_body = cv2.bitwise_and(axial_slice_norm, axial_slice_norm,
                                                         mask=only_body_mask)  # Выделяем тело в изображении HU
-                axial_segmentations, segmentation_time = self._axial_slice_predict(axial_slice_norm_body)
+                
+                cv2.imwrite('/app/generation_results/axial_slice_norm.jpg', axial_slice_norm)
+
+                axial_segmentations, segmentation_time = self._axial_slice_predict(axial_slice_norm)
+
+                axial_segmentations = clean_segmentation_masks_advanced(axial_segmentations, only_body_mask)
+
+
                 segmentation_masks_image = create_segmentations_masks(axial_segmentations)
                 color_output = create_color_output(segmentation_masks_image, only_body_mask)
                 list_crd_from_color_output = create_list_crd_from_color_output(color_output, pixel_spacing, only_body_mask)
                 segmentation_results_cnt = create_segmentation_results_cnt(axial_segmentations)
 
-                img_mesh, meshdata = create_mesh(list_crd_from_color_output[:2], list_crd_from_color_output[2:])
-                img_mesh = cv2.flip(img_mesh, 0)
+                # img_mesh, meshdata = create_mesh(list_crd_from_color_output[:2], list_crd_from_color_output[2:])
+                # img_mesh = cv2.flip(img_mesh, 0)
                 segmentation_masks_full_image = create_segmentation_masks_full_image(
                     segmentation_masks_image, only_body_mask, ribs_annotated_image,
-                    axial_slice_norm_body, img_mesh)
-                simulation_results, saved_file_name, simulation_time = self.get_synthetic_dataset(meshdata)
-                answer = create_answer(segmentation_masks_full_image, segmentation_results_cnt, segmentation_time, saved_file_name, simulation_time)
-        except:
+                    axial_slice_norm_body, None)
+                generate_eit_dataset(list_crd_from_color_output)
+                answer = create_answer(segmentation_masks_full_image, segmentation_results_cnt, segmentation_time, 'saved_file_name', 'simulation_time')
+        except Exception as e:
             logger.error("🔴 Ошибка в классе NIIToMask, функция get_coordinate_slice_from_nii")
+            logger.error(e)
         return answer
+
+
+            
