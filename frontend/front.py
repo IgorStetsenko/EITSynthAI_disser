@@ -30,8 +30,7 @@ col1, col2 = st.columns(2)
 with col1:
     with st.expander("Описание решения"):
         st.markdown("""Сервис позволяет генерировать датасеты для ЭИТ. Перед запуском необходимо выбрать режим генерации
-        и загрузить соответствующий файл. Сервис поддерживает файлы .dicom, .nii, .jpg, .png.
-        """)
+        и загрузить соответствующий файл. Сервис поддерживает файлы .dicom, .nii,""")
 with col2:
     with st.expander("Описание режимов генерации датасета для ЭИТ"):
         st.markdown("""
@@ -42,7 +41,6 @@ with col2:
     отрицательном выше нулевого. Если значение не задано, то будет выбран срез между 6 и 7 ребром (по аналогии с 
     режимом dicom_sequences_auto).
     * dicom_frame - Обработка одного dicom-среза. Режим применяется, если в наличии есть только один срез.
-    * jpg_png - Обработка изображений. Поперечный срез тела в формате jpg, png.
     * nii - Формат файла исследования .nii""")
 
 # Логотип в сайдбаре
@@ -51,7 +49,7 @@ st.sidebar.image("logo.png", use_container_width=True)
 # Выбор маркера в сайдбаре
 generation_mode = st.sidebar.radio(
     "Выберите режим генерации датасета:",
-    ("dicom_sequences_auto", "dicom_sequences_custom", "dicom_frame", "jpg_png", "nii")
+    ("dicom_sequences_auto", "dicom_sequences_custom", "dicom_frame", "nii")
 )
 
 # Поле для ввода текста, если выбран dicom_sequences_custom
@@ -142,40 +140,6 @@ if __name__ == "__main__":
                     files = {'file': ('dicom_files.zip', dicom_zip.getvalue(), 'application/zip')}
                     t_start = time.time()
                     response = requests.post(config.upload_dicom_frame_http, files=files)
-                    t_finish = time.time() - t_start
-
-                    if response.status_code == 200:
-                        result = response.json()
-
-                        # Отображаем время выполнения
-                        st.success(f"Обработка завершена за {result.get('execution_time', int(t_finish))} с")
-                        st.success(f"Время сегментации {result['segmentation_time']} c")
-                        st.success(f"Время генерации синтетического датасета {result['simulation_time']} c")
-                        st.success(f"Синтетический датасет выгружен в файл {result['saved_file_name']}")
-
-                        # Отображаем текстовые данные
-                        if 'text_data' in result:
-                            st.subheader("Визуализация результатов сегментации:")
-                            st.text(result['text_data'])
-
-                        # Отображаем изображение
-                        if 'image' in result:
-                            img_bytes = base64.b64decode(result['image'].encode('utf-8'))
-                            img = Image.open(io.BytesIO(img_bytes))
-                            st.image(img, caption="Визуализация результатов сегментации", use_container_width=True)
-                    else:
-                        st.error(f"Ошибка обработки: {response.text}")
-
-                except requests.exceptions.RequestException as e:
-                    st.error(f"Ошибка соединения с сервером: {str(e)}")
-                except Exception as e:
-                    st.error(f"Неожиданная ошибка: {str(e)}")
-            elif generation_mode == "jpg_png":
-                try:
-                    image_axial_slice_zip = image_axial_slice_to_zip(uploaded_file)
-                    files = {'file': ('dicom_files.zip', image_axial_slice_zip.getvalue(), 'application/zip')}
-                    t_start = time.time()
-                    response = requests.post(config.upload_image_axial_slice_http, files=files)
                     t_finish = time.time() - t_start
 
                     if response.status_code == 200:

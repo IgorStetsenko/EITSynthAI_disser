@@ -774,30 +774,30 @@ def _plot_debug(points, tris, elem_physicals, electrodes_final, cfg, phys_mappin
     # --- Электроды ---
     show_both = (electrodes_standard is not None and electrodes_optimized is not None)
 
-    if show_both:
-        # Исходное (равномерное) — красное
-        ax1.plot(electrodes_standard[:, 0], electrodes_standard[:, 1], "ro",
-                 markersize=10, markeredgecolor="black", markeredgewidth=1.5,
-                 label="Исходное положение", zorder=10)
-        ax2.plot(electrodes_standard[:, 0], electrodes_standard[:, 1], "ro",
-                 markersize=8, markeredgecolor="white", markeredgewidth=1.5,
-                 label="Исходное положение", zorder=10)
+    # if show_both:
+    #     # Исходное (равномерное) — красное
+    #     ax1.plot(electrodes_standard[:, 0], electrodes_standard[:, 1], "ro",
+    #              markersize=10, markeredgecolor="black", markeredgewidth=1.5,
+    #              label="Исходное положение", zorder=10)
+    #     ax2.plot(electrodes_standard[:, 0], electrodes_standard[:, 1], "ro",
+    #              markersize=8, markeredgecolor="white", markeredgewidth=1.5,
+    #              label="Исходное положение", zorder=10)
 
-        # Оптимальное — зелёное
-        ax1.plot(electrodes_optimized[:, 0], electrodes_optimized[:, 1], "go",
-                 markersize=10, markeredgecolor="black", markeredgewidth=1.5,
-                 label="Оптимальное положение", zorder=11)
-        ax2.plot(electrodes_optimized[:, 0], electrodes_optimized[:, 1], "go",
-                 markersize=8, markeredgecolor="white", markeredgewidth=1.5,
-                 label="Оптимальное положение", zorder=11)
-    else:
-        # Только один набор (равномерный режим)
-        ax1.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
-                 markersize=10, markeredgecolor="black", markeredgewidth=1.5,
-                 label="Электроды", zorder=10)
-        ax2.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
-                 markersize=8, markeredgecolor="white", markeredgewidth=1.5,
-                 label="Электроды", zorder=10)
+    #     # Оптимальное — зелёное
+    #     ax1.plot(electrodes_optimized[:, 0], electrodes_optimized[:, 1], "go",
+    #              markersize=10, markeredgecolor="black", markeredgewidth=1.5,
+    #              label="Оптимальное положение", zorder=11)
+    #     ax2.plot(electrodes_optimized[:, 0], electrodes_optimized[:, 1], "go",
+    #              markersize=8, markeredgecolor="white", markeredgewidth=1.5,
+    #              label="Оптимальное положение", zorder=11)
+    # else:
+    #     # Только один набор (равномерный режим)
+    #     ax1.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
+    #              markersize=10, markeredgecolor="black", markeredgewidth=1.5,
+    #              label="Электроды", zorder=10)
+    #     ax2.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
+    #              markersize=8, markeredgecolor="white", markeredgewidth=1.5,
+    #              label="Электроды", zorder=10)
 
     # Настройки левого графика
     ax1.set_aspect("equal")
@@ -865,17 +865,17 @@ def _plot_class_masks(points, tris, elem_physicals, electrodes_final, cfg, phys_
         ax1.triplot(points[:, 0], points[:, 1], tris,
                     color="lightgray", lw=0.2, alpha=0.6)
 
-        if show_both:
-            ax1.plot(electrodes_standard[:, 0], electrodes_standard[:, 1], "ro",
-                     markersize=12, markeredgecolor="black", markeredgewidth=1.5,
-                     label="Исходное положение", zorder=10)
-            ax1.plot(electrodes_optimized[:, 0], electrodes_optimized[:, 1], "go",
-                     markersize=12, markeredgecolor="black", markeredgewidth=1.5,
-                     label="Оптимальное положение", zorder=11)
-        else:
-            ax1.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
-                     markersize=12, markeredgecolor="black", markeredgewidth=1.5,
-                     label="Электроды", zorder=10)
+        # if show_both:
+        #     ax1.plot(electrodes_standard[:, 0], electrodes_standard[:, 1], "ro",
+        #              markersize=12, markeredgecolor="black", markeredgewidth=1.5,
+        #              label="Исходное положение", zorder=10)
+        #     ax1.plot(electrodes_optimized[:, 0], electrodes_optimized[:, 1], "go",
+        #              markersize=12, markeredgecolor="black", markeredgewidth=1.5,
+        #              label="Оптимальное положение", zorder=11)
+        # else:
+        #     ax1.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
+        #              markersize=12, markeredgecolor="black", markeredgewidth=1.5,
+        #              label="Электроды", zorder=10)
 
         if len(idx) == 0:
             ax1.text(0.5, 0.5,
@@ -889,7 +889,7 @@ def _plot_class_masks(points, tris, elem_physicals, electrodes_final, cfg, phys_
                         c="red", s=10, alpha=0.6, label="Центроиды")
 
         ax1.set_aspect("equal")
-        ax1.set_title(f"Только: {title}", fontsize=14, fontweight="bold")
+        ax1.set_title(f"{title}", fontsize=14, fontweight="bold")
         ax1.grid(True, alpha=0.3)
         ax1.legend(loc="upper left", fontsize=9)
 
@@ -940,22 +940,22 @@ def _plot_class_masks(points, tris, elem_physicals, electrodes_final, cfg, phys_
 # ============================================================
 def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimization: bool = True):
     """
-    Основная функция генерации датасета ЭИТ.
+    Генерация датасета ЭИТ с исправленной подготовкой геометрий.
 
-    :param list_crd: список строк с описанием тканей (первая строка — pixel_spacing).
-    :param cfg: конфигурация генерации.
-    :param use_optimization: если True — электроды оптимизируются ГА;
-                             равномерное размещение всё равно считается и рисуется для сравнения,
-                             но в FEM-расчётах участвуют только оптимизированные позиции.
-                             Если False — используется только равномерное размещение.
+    Главное исправление:
+    - классы 0/1/2/3 (bone/muscle/lung/fat) делаются взаимоисключающими
+      ещё ДО mesh-классификации;
+    - это устраняет ситуацию, когда мышцы забирают элементы лёгких,
+      а жир частично пропадает.
     """
     if cfg is None:
         cfg = EITConfig()
+
     os.makedirs(cfg.output_dir, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    # 1. Парсинг и геометрия
-    # ------------------------------------------------------------------
+    if not list_crd or len(list_crd) < 3:
+        raise ValueError("list_crd пустой или повреждён")
+
     pixel_spacing = float(list_crd[0])
     tissues = parse_list_crd(list_crd[2:], pixel_spacing)
 
@@ -969,35 +969,95 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
         print(f"  Класс {cls_id}: {len(polys)} полигонов, общая площадь {total_area:.1f} мм²")
 
     if 4 not in tissues:
-        raise ValueError("Класс 4 (контур тела) не найден!")
+        raise ValueError("Класс 4 (body) отсутствует!")
 
     body_geoms = build_class_geometry({4: tissues[4]})
     if 4 not in body_geoms:
-        raise ValueError("Не удалось создать корректный полигон тела")
+        raise ValueError("Не удалось построить body_poly")
 
     body_poly = _largest_polygon(body_geoms[4]).buffer(0)
     if body_poly.is_empty or body_poly.area <= 0:
-        raise ValueError("Полигон тела пустой или некорректный")
+        raise ValueError("body_poly пустой или невалидный")
 
     raw_geoms = build_class_geometry({k: v for k, v in tissues.items() if k in [0, 1, 2, 3]})
+
+    def clip_to_body(geom):
+        if geom is None:
+            return None
+        g = _normalize_geometry(geom.intersection(body_poly))
+        if g is None or g.is_empty or g.area <= 10.0:
+            return None
+        return g
+
+    def geom_subtract(base_geom, subtract_list):
+        if base_geom is None:
+            return None
+        subtract_list = [g for g in subtract_list if g is not None and not g.is_empty]
+        if not subtract_list:
+            return _normalize_geometry(base_geom)
+        try:
+            diff = base_geom.difference(unary_union(subtract_list))
+        except Exception:
+            diff = base_geom
+            for g in subtract_list:
+                try:
+                    diff = diff.difference(g)
+                except Exception:
+                    pass
+        diff = _normalize_geometry(diff)
+        if diff is None or diff.is_empty or diff.area <= 10.0:
+            return None
+        return diff
+
+    bone_raw = clip_to_body(raw_geoms.get(0))
+    muscle_raw = clip_to_body(raw_geoms.get(1))
+    lung_raw = clip_to_body(raw_geoms.get(2))
+    fat_raw = clip_to_body(raw_geoms.get(3))
+
+    print("\n[Main] Геометрии после clip/intersection:")
+    for cls_id, geom in [(0, bone_raw), (1, muscle_raw), (2, lung_raw), (3, fat_raw)]:
+        if geom is None:
+            print(f"  class {cls_id}: None")
+        else:
+            print(f"  class {cls_id}: area={geom.area:.1f}, type={geom.geom_type}")
+
+    # -----------------------------
+    # Делаем классы взаимоисключающими
+    # Приоритет геометрии:
+    # 1) bone
+    # 2) lung
+    # 3) muscle
+    # 4) fat
+    # -----------------------------
+    bone = bone_raw
+    lung = geom_subtract(lung_raw, [bone])
+    muscle = geom_subtract(muscle_raw, [bone, lung])
+    fat = geom_subtract(fat_raw, [bone, lung, muscle])
+
     inclusions: Dict[int, GeometryLike] = {}
-    for cls_id, geom in raw_geoms.items():
-        clipped = _normalize_geometry(geom.intersection(body_poly))
-        if clipped is not None and clipped.area > 10.0:
-            inclusions[cls_id] = clipped
+    if bone is not None:
+        inclusions[0] = bone
+    if muscle is not None:
+        inclusions[1] = muscle
+    if lung is not None:
+        inclusions[2] = lung
+    if fat is not None:
+        inclusions[3] = fat
 
-    print("\n[Main] Геометрии включений после clip/intersection:")
-    for cls_id, geom in inclusions.items():
-        print(f"  class {cls_id}: area={geom.area:.1f}, type={geom.geom_type}")
+    print("\n[Main] Геометрии включений после mutual exclusion:")
+    for cls_id in [0, 1, 2, 3]:
+        geom = inclusions.get(cls_id)
+        if geom is None:
+            print(f"  class {cls_id}: None")
+        else:
+            print(f"  class {cls_id}: area={geom.area:.1f}, type={geom.geom_type}")
 
-    # Центрирование
+    # Центрируем всё относительно центра тела
     cx, cy = body_poly.centroid.x, body_poly.centroid.y
     body_poly = translate(body_poly, xoff=-cx, yoff=-cy)
     inclusions = {k: translate(v, xoff=-cx, yoff=-cy) for k, v in inclusions.items()}
 
-    # ------------------------------------------------------------------
-    # 2. Построение mesh
-    # ------------------------------------------------------------------
+    # Mesh
     points, tris, elem_physicals, phys_mapping = build_mesh_gmsh(
         body_poly=body_poly,
         inclusions=inclusions,
@@ -1008,12 +1068,8 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
         overlap_threshold_lung=cfg.overlap_threshold_lung,
     )
 
-    # ------------------------------------------------------------------
-    # 3. Расстановка электродов
-    # ------------------------------------------------------------------
     print("\n[Main] Расстановка электродов...")
 
-    # Всегда считаем равномерное размещение (для визуализации и как fallback)
     electrodes_standard = place_electrodes(body_poly, cfg.n_electrodes)
 
     if use_optimization:
@@ -1022,7 +1078,7 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
             body_poly=body_poly,
             inclusions=inclusions,
             n_electrodes=cfg.n_electrodes,
-            electrode_size_mm=15.0,  # диаметр электрода, мм
+            electrode_size_mm=15.0,
         )
         electrodes_optimized = optimizer.optimize()
         electrodes_final = electrodes_optimized
@@ -1030,9 +1086,8 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
     else:
         electrodes_optimized = None
         electrodes_final = electrodes_standard
-        print("[Main] Используется равномерное размещение.")
+        print("[Main] Используются равномерные электроды без оптимизации.")
 
-    # Поиск узлов mesh, ближайших к финальным электродам
     elec_nodes = find_nearest_nodes(points, electrodes_final)
 
     np.savetxt(
@@ -1040,12 +1095,9 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
         np.hstack([electrodes_final, elec_nodes[:, None]]),
         delimiter=",",
         header="x_mm,y_mm,node_id",
-        comments="",
+        comments=""
     )
 
-    # ------------------------------------------------------------------
-    # 4. Подготовка прямой задачи
-    # ------------------------------------------------------------------
     drive = build_drive_pattern(cfg.n_electrodes, cfg.drive_pattern)
 
     dt = 1.0 / cfg.breath_fps
@@ -1055,17 +1107,13 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
 
     t = np.arange(n_frames, dtype=float) * dt
     breath_phase = np.sin(2.0 * np.pi * t / cfg.breath_period_sec)
-    lung_sigma_series = (
-        0.5 * (sigma_lung_ex + sigma_lung_in)
-        - 0.5 * (sigma_lung_ex - sigma_lung_in) * breath_phase
-    )
+    lung_sigma_series = 0.5 * (sigma_lung_ex + sigma_lung_in) - 0.5 * (sigma_lung_ex - sigma_lung_in) * breath_phase
 
     sigma_base = assign_conductivity(elem_physicals, cfg, sigma_lung_ex, phys_mapping)
     lung_mask = elem_physicals == phys_mapping["lung"]
     lung_elems = np.where(lung_mask)[0]
 
-    print(f"\n[Main] Элементов лёгких: {len(lung_elems)} из {len(tris)} "
-          f"({len(lung_elems) / len(tris) * 100:.1f}%)")
+    print(f"\n[Main] Элементов лёгких: {len(lung_elems)} из {len(tris)} ({len(lung_elems) / len(tris) * 100:.1f}%)")
 
     n_meas = cfg.n_electrodes * (cfg.n_electrodes - 2)
     voltages = np.zeros((n_frames, n_meas), dtype=float)
@@ -1077,10 +1125,8 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
         sigma_series = None
         delta_sigma_series = None
 
-    # ------------------------------------------------------------------
-    # 5. Цикл по кадрам (FEM)
-    # ------------------------------------------------------------------
     print(f"\n[Main] Генерация {n_frames} кадров...")
+
     for f in range(n_frames):
         sigma = sigma_base.copy()
         sigma[lung_mask] = lung_sigma_series[f]
@@ -1095,65 +1141,75 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
         for inj, meas_pairs in drive:
             inj_nodes = (int(elec_nodes[inj[0]]), int(elec_nodes[inj[1]]))
             v = solve_forward(k_global, inj_nodes, elec_nodes, current=cfg.inject_current_A)
+
             for m_plus, m_minus in meas_pairs:
                 voltages[f, row] = v[m_plus] - v[m_minus]
                 row += 1
 
-        if (f + 1) % 10 == 0 or f == 0:
+        if ((f + 1) % 10 == 0) or (f == 0):
             print(f"  frame {f + 1}/{n_frames}, σ_lung={lung_sigma_series[f]:.4f} S/m")
 
-    # ------------------------------------------------------------------
-    # 6. Сохранение результатов
-    # ------------------------------------------------------------------
-    meta = {
-        "n_electrodes": cfg.n_electrodes,
-        "inject_current_A": cfg.inject_current_A,
-        "drive_pattern": cfg.drive_pattern,
-        "breath_period_sec": cfg.breath_period_sec,
-        "breath_fps": cfg.breath_fps,
-        "breath_n_cycles": cfg.breath_n_cycles,
-        "pixel_spacing_mm": pixel_spacing,
-        "n_nodes": int(len(points)),
-        "n_elements": int(len(tris)),
-        "conductivities": cfg.conductivity,
-        "electrode_nodes": elec_nodes.tolist(),
-        "phys_mapping": phys_mapping,
-        "n_lung_elements": int(len(lung_elems)),
-        "lung_sigma_series_min": float(np.min(lung_sigma_series)),
-        "lung_sigma_series_max": float(np.max(lung_sigma_series)),
-        "use_optimization": bool(use_optimization),
-    }
+    # Сохранение массива mesh
+    np.savez_compressed(
+        os.path.join(cfg.output_dir, f"{cfg.dataset_name}_mesh.npz"),
+        points=points.astype(np.float32),
+        tris=tris.astype(np.int32),
+        elem_physicals=elem_physicals.astype(np.int16),
+    )
 
-    with open(os.path.join(cfg.output_dir, f"{cfg.dataset_name}_meta.json"),
-              "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2, ensure_ascii=False)
-
-    np.save(os.path.join(cfg.output_dir, f"{cfg.dataset_name}_voltages.npy"), voltages)
-    np.save(os.path.join(cfg.output_dir, f"{cfg.dataset_name}_breath_phase.npy"), breath_phase)
-    np.save(os.path.join(cfg.output_dir, f"{cfg.dataset_name}_lung_sigma_series.npy"), lung_sigma_series)
-    np.savez(os.path.join(cfg.output_dir, f"{cfg.dataset_name}_mesh.npz"),
-             points=points, tris=tris, elem_physicals=elem_physicals)
+    np.save(
+        os.path.join(cfg.output_dir, f"{cfg.dataset_name}_voltages.npy"),
+        voltages.astype(np.float32)
+    )
 
     if sigma_series is not None:
-        np.save(os.path.join(cfg.output_dir, f"{cfg.dataset_name}_sigma_series.npy"), sigma_series)
-        np.save(os.path.join(cfg.output_dir, f"{cfg.dataset_name}_delta_sigma_series.npy"), delta_sigma_series)
+        np.save(
+            os.path.join(cfg.output_dir, f"{cfg.dataset_name}_sigma_series.npy"),
+            sigma_series
+        )
+        np.save(
+            os.path.join(cfg.output_dir, f"{cfg.dataset_name}_delta_sigma_series.npy"),
+            delta_sigma_series
+        )
 
-    print(f"\n[Main] ✓ Датасет сохранён в {cfg.output_dir}")
-
-    # ------------------------------------------------------------------
-    # 7. Визуализация
-    # ------------------------------------------------------------------
     if cfg.debug_plot_mesh:
         _plot_debug(
-            points, tris, elem_physicals, electrodes_final, cfg, phys_mapping,
+            points=points,
+            tris=tris,
+            elem_physicals=elem_physicals,
+            electrodes_final=electrodes_final,
+            cfg=cfg,
+            phys_mapping=phys_mapping,
             electrodes_standard=electrodes_standard,
             electrodes_optimized=electrodes_optimized,
             lung_elems=lung_elems,
         )
+
+    if cfg.debug_plot_each_class:
         _plot_class_masks(
-            points, tris, elem_physicals, electrodes_final, cfg, phys_mapping,
+            points=points,
+            tris=tris,
+            elem_physicals=elem_physicals,
+            electrodes_final=electrodes_final,
+            cfg=cfg,
+            phys_mapping=phys_mapping,
             electrodes_standard=electrodes_standard,
             electrodes_optimized=electrodes_optimized,
         )
 
-    return voltages, breath_phase
+    meta = {
+        "pixel_spacing_mm": pixel_spacing,
+        "n_nodes": int(len(points)),
+        "n_elements": int(len(tris)),
+        "n_electrodes": int(cfg.n_electrodes),
+        "n_frames": int(n_frames),
+        "drive_pattern": cfg.drive_pattern,
+        "conductivity": cfg.conductivity,
+        "lung_element_count": int(len(lung_elems)),
+        "class_present": sorted(list(inclusions.keys())),
+    }
+
+    with open(os.path.join(cfg.output_dir, f"{cfg.dataset_name}_meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    print(f"\n[Main] ✓ Датасет сохранён в {cfg.output_dir}")

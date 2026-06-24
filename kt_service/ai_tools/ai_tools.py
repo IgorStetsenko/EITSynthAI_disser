@@ -89,6 +89,7 @@ class DICOMabc(abc.ABC):
         """
         # Разархивирование в память
         front_slice_norm, img_3d, i_slices, custom_number_slise = [], [], [], []
+        front_slice_ada_norm = []
         try:
             with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
                 i_slices, custom_number_slise = create_dicom_dict(zip_file)
@@ -107,8 +108,7 @@ class DICOMabc(abc.ABC):
                 logger.info("✅ Картинка сохранена")
             logger.info(f"✅ Выход функции _search_front_slise | размер front_slice_norm {front_slice_norm.shape}, размер img_3d {img_3d.shape}, i_slices_len {len(i_slices)}, номер выбранного среза {custom_number_slise}")
         except Exception as e:
-            print(f"{str(e)}")
-            logger.error(f"🔴 Ошибка в функции _search_front_slise | i_slices_len {len(i_slices)}")
+            logger.error(f"функция _search_front_slise {traceback.format_exc()}")
         return front_slice_norm, img_3d, i_slices, custom_number_slise, front_slice_ada_norm
 
 
@@ -210,16 +210,26 @@ class DICOMSequencesToMask(DICOMabc):
             ribs_detections = self._ribs_predict(front_slice)
             axial_slice, number_slice_eit_list = self._search_axial_slice(ribs_detections, i_slices)
             only_body_mask = get_axial_slice_body_mask(axial_slice[-1])
+            only_body_mask = cv2.rotate(only_body_mask, cv2.ROTATE_180)
+            only_body_mask = numpy.flip(only_body_mask, axis=1)  # Переворот по оси Y
+
             W_air, W_fat, W_muscle, W_bone = create_tissue_probability_maps(axial_slice[-1].pixel_array, sigma_blur=1.0,
                                                                     body_mask=only_body_mask)
             axial_slice_norm = normalize_adaptive(axial_slice[-1].pixel_array, W_air, W_fat, W_muscle, W_bone)
+
+            cv2.imwrite('/app/generation_results/axial_slice_norm.jpg', axial_slice_norm)
+
+            
+
             # axial_slice_norm = classic_norm(axial_slice[-1].pixel_array)
             
             pixel_spacing = get_pixel_spacing(axial_slice[-1])
             axial_slice_norm_body = cv2.bitwise_and(axial_slice_norm, axial_slice_norm,
                                                     mask=only_body_mask)
+            cv2.imwrite('/app/generation_results/axial_slice_norm_body.jpg', axial_slice_norm_body)
             ribs_annotated_image = draw_annotate(ribs_detections, front_slice_ada_norm, number_slice_eit_list)
-            axial_segmentations_mask, segmentation_time = self._axial_slice_predict(axial_slice_norm_body)
+            axial_segmentations_mask, segmentation_time = self._axial_slice_predict(axial_slice_norm)
+            axial_segmentations_mask = clean_segmentation_masks_advanced(axial_segmentations_mask, only_body_mask)
 
 
 
@@ -234,7 +244,7 @@ class DICOMSequencesToMask(DICOMabc):
                 segmentation_masks_image, only_body_mask, ribs_annotated_image,
                 axial_slice_norm_body, img_mesh
             )
-            #generate_eit_dataset(list_crd_from_color_output)
+            # generate_eit_dataset(list_crd_from_color_output)
             answer = create_answer(segmentation_masks_full_image, segmentation_results_cnt, segmentation_time, saved_file_name, simulation_time)
 
 
@@ -267,6 +277,71 @@ class DICOMSequencesToMask(DICOMabc):
         except:
             logger.error("🔴 Ошибка в классе DICOMSequencesToMask, функция get_synthetic_dataset")
         return simulation_results, filename, simulation_time
+
+
+class NIIToMask(DICOMSequencesToMask):
+    """
+    Класс для сегментации КТ-серии в формате nii.  Наследуется от класса DICOMSequencesToMask.
+    """
+
+    def get_coordinate_slice_from_nii(self, zip_buffer, answer=None):
+        """
+        У nii файлов меньше срезов пачке, поэтому фронтальный срез не получается хорошего качества. При обработке nii
+        просто берется средний срез в пачке
+
+        Args:
+            zip_buffer: архив с dicom-файлами
+
+        Returns:
+                answer = {
+                    "image": img_base64,
+                    "text_data": segmentation_results_cnt,
+                    "segmentation_time": segmentation_time,
+                    "status": "success",
+                    "message": "Processing completed successfully"}
+        """
+        answer = []
+        try:
+            ribs_annotated_image = None
+            pixel_spacing = [0.662, 0.662]  
+            with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
+                nii_mean_slice, pixel_spacing = get_nii_mean_slice(zip_file)
+                only_body_mask = get_axial_slice_body_mask_nii(nii_mean_slice)
+                W_air, W_fat, W_muscle, W_bone = create_tissue_probability_maps(nii_mean_slice, sigma_blur=1.0,
+                                                                                    body_mask=only_body_mask)
+                axial_slice_norm = normalize_adaptive(nii_mean_slice, W_air, W_fat, W_muscle, W_bone)
+
+                # axial_slice_norm = classic_norm(nii_mean_slice)
+                # axial_slice_norm = cv2.rotate(axial_slice_norm, cv2.ROTATE_180)
+                
+                axial_slice_norm_body = cv2.bitwise_and(axial_slice_norm, axial_slice_norm,
+                                                        mask=only_body_mask)  # Выделяем тело в изображении HU
+                
+                # cv2.imwrite('/app/generation_results/axial_slice_norm.jpg', axial_slice_norm)
+
+                axial_segmentations, segmentation_time = self._axial_slice_predict(axial_slice_norm)
+
+                axial_segmentations = clean_segmentation_masks_advanced(axial_segmentations, only_body_mask)
+
+
+                segmentation_masks_image = create_segmentations_masks(axial_segmentations)
+                color_output = create_color_output(segmentation_masks_image, only_body_mask)
+                list_crd_from_color_output = create_list_crd_from_color_output(color_output, pixel_spacing, only_body_mask)
+                segmentation_results_cnt = create_segmentation_results_cnt(axial_segmentations)
+
+                # img_mesh, meshdata = create_mesh(list_crd_from_color_output[:2], list_crd_from_color_output[2:])
+                # img_mesh = cv2.flip(img_mesh, 0)
+                segmentation_masks_full_image = create_segmentation_masks_full_image(
+                    segmentation_masks_image, only_body_mask, ribs_annotated_image,
+                    axial_slice_norm_body, None)
+                generate_eit_dataset(list_crd_from_color_output)
+                answer = create_answer(segmentation_masks_full_image, segmentation_results_cnt, segmentation_time, 'saved_file_name', 'simulation_time')
+        except Exception as e:
+            logger.error("🔴 Ошибка в классе NIIToMask, функция get_coordinate_slice_from_nii")
+            logger.error(e)
+        return answer
+
+
 
 
 class DICOMSequencesToMaskCustom(DICOMSequencesToMask):
@@ -313,7 +388,7 @@ class DICOMSequencesToMaskCustom(DICOMSequencesToMask):
                 axial_slice_norm_body, img_mesh
             )
 
-            simulation_results, saved_file_name, simulation_time = self.get_synthetic_dataset(meshdata)
+            # simulation_results, saved_file_name, simulation_time = self.get_synthetic_dataset(meshdata)
             answer = create_answer(segmentation_masks_full_image, segmentation_results_cnt, segmentation_time, saved_file_name, simulation_time)
         except:
             logger.error("🔴 Ошибка в классе DICOMSequencesToMaskCustom, функция get_coordinate_slice_from_dicom_custom")
@@ -370,111 +445,6 @@ class DICOMToMask(DICOMSequencesToMask):
         return answer
 
 
-class ImageToMask(DICOMSequencesToMask):
-    """
-    Класс для запуска сегментации КТ-снимка в формате нормализованного изображения.
-    Наследуется от класса DICOMSequencesToMask
-    """
-
-    def get_coordinate_slice_from_image(self, axial_slice_norm_body):
-        """
-        Функция для сегментации КТ-снимка в формате нормализованного изображения
-
-        Args:
-            axial_slice_norm_body: нормализованное изображение
-
-        Returns:
-                answer = {
-                    "image": img_base64,
-                    "text_data": segmentation_results_cnt,
-                    "segmentation_time": segmentation_time,
-                    "status": "success",
-                    "message": "Processing completed successfully"}
-        """
-        answer = []
-        try:
-            only_body_mask = None
-            ribs_annotated_image = None
-            pixel_spacing = [0.753906, 0.753906]
-            axial_segmentations, segmentation_time = self._axial_slice_predict(axial_slice_norm_body)
-            segmentation_masks_image = create_segmentations_masks(axial_segmentations)
-            color_output = create_color_output(segmentation_masks_image, only_body_mask)
-            list_crd_from_color_output = create_list_crd_from_color_output(color_output, pixel_spacing)
-            segmentation_results_cnt = create_segmentation_results_cnt(axial_segmentations)
-            img_mesh, meshdata = create_mesh(list_crd_from_color_output[:2], list_crd_from_color_output[2:])
-            img_mesh = cv2.flip(img_mesh, 0)
-            segmentation_masks_full_image = create_segmentation_masks_full_image(segmentation_masks_image, only_body_mask,
-                                                                                ribs_annotated_image,
-                                                                                axial_slice_norm_body, img_mesh
-                                                                                )
-            simulation_results, saved_file_name, simulation_time = self.get_synthetic_dataset(meshdata)
-            answer = create_answer(segmentation_masks_full_image, segmentation_results_cnt, segmentation_time, saved_file_name, simulation_time)
-        except:
-            logger.error("🔴 Ошибка в классе ImageToMask, функция get_coordinate_slice_from_image")
-        return answer
-
-
-class NIIToMask(DICOMSequencesToMask):
-    """
-    Класс для сегментации КТ-серии в формате nii.  Наследуется от класса DICOMSequencesToMask.
-    """
-
-    def get_coordinate_slice_from_nii(self, zip_buffer, answer=None):
-        """
-        У nii файлов меньше срезов пачке, поэтому фронтальный срез не получается хорошего качества. При обработке nii
-        просто берется средний срез в пачке
-
-        Args:
-            zip_buffer: архив с dicom-файлами
-
-        Returns:
-                answer = {
-                    "image": img_base64,
-                    "text_data": segmentation_results_cnt,
-                    "segmentation_time": segmentation_time,
-                    "status": "success",
-                    "message": "Processing completed successfully"}
-        """
-        answer = []
-        try:
-            ribs_annotated_image = None
-            pixel_spacing = [0.662, 0.662]  
-            with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
-                nii_mean_slice, pixel_spacing = get_nii_mean_slice(zip_file)
-                only_body_mask = get_axial_slice_body_mask_nii(nii_mean_slice)
-                W_air, W_fat, W_muscle, W_bone = create_tissue_probability_maps(nii_mean_slice, sigma_blur=1.0,
-                                                                                    body_mask=only_body_mask)
-                axial_slice_norm = normalize_adaptive(nii_mean_slice, W_air, W_fat, W_muscle, W_bone)
-
-                # axial_slice_norm = classic_norm(nii_mean_slice)
-                # axial_slice_norm = cv2.rotate(axial_slice_norm, cv2.ROTATE_180)
-                
-                axial_slice_norm_body = cv2.bitwise_and(axial_slice_norm, axial_slice_norm,
-                                                        mask=only_body_mask)  # Выделяем тело в изображении HU
-                
-                cv2.imwrite('/app/generation_results/axial_slice_norm.jpg', axial_slice_norm)
-
-                axial_segmentations, segmentation_time = self._axial_slice_predict(axial_slice_norm)
-
-                axial_segmentations = clean_segmentation_masks_advanced(axial_segmentations, only_body_mask)
-
-
-                segmentation_masks_image = create_segmentations_masks(axial_segmentations)
-                color_output = create_color_output(segmentation_masks_image, only_body_mask)
-                list_crd_from_color_output = create_list_crd_from_color_output(color_output, pixel_spacing, only_body_mask)
-                segmentation_results_cnt = create_segmentation_results_cnt(axial_segmentations)
-
-                # img_mesh, meshdata = create_mesh(list_crd_from_color_output[:2], list_crd_from_color_output[2:])
-                # img_mesh = cv2.flip(img_mesh, 0)
-                segmentation_masks_full_image = create_segmentation_masks_full_image(
-                    segmentation_masks_image, only_body_mask, ribs_annotated_image,
-                    axial_slice_norm_body, None)
-                generate_eit_dataset(list_crd_from_color_output)
-                answer = create_answer(segmentation_masks_full_image, segmentation_results_cnt, segmentation_time, 'saved_file_name', 'simulation_time')
-        except Exception as e:
-            logger.error("🔴 Ошибка в классе NIIToMask, функция get_coordinate_slice_from_nii")
-            logger.error(e)
-        return answer
 
 
             

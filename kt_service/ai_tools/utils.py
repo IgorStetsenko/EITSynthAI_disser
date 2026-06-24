@@ -1431,7 +1431,7 @@ def normalize_adaptive(img, W_air, W_fat, W_muscle, W_bone):
     """
     # Шаг 1: создать маску тела
     body_mask = get_only_body_mask(img)
-
+    body_mask = cv2.rotate(body_mask, cv2.ROTATE_180)
     # Шаг 2: оценить параметры с учётом маски
     norm_params = estimate_tissue_params(
         img, W_air, W_fat, W_muscle, W_bone,
@@ -1459,7 +1459,6 @@ def normalize_adaptive(img, W_air, W_fat, W_muscle, W_bone):
 
     # Ограничиваем выбросы (опционально)
     I_normalized = numpy.clip(I_normalized, -5, 5)
-
     return normalize_to_uint8(I_normalized)
 
 
@@ -1468,60 +1467,61 @@ def clean_segmentation_masks(axial_segmentations: numpy.ndarray, only_body_mask:
     Очистка масок сегментации КТ-снимка.
     """
     cleaned = axial_segmentations.copy()
-    
+
     # Нормализуем only_body_mask к бинарному виду
     body_mask_binary = (only_body_mask > 127).astype(numpy.uint8)
-    
+
     # 1. Отсекаем все объекты за пределами only_body_mask
     cleaned[body_mask_binary == 0] = 0
-    
+
     # 2. Находим контуры легких и убираем кости ВНУТРИ них
     lungs_mask = (cleaned == 4).astype(numpy.uint8)
     bone_mask = (cleaned == 1).astype(numpy.uint8)
-    
-    # Находим контуры легких
+
     lung_contours, _ = cv2.findContours(lungs_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Для каждого контура легкого
+
     for lung_contour in lung_contours:
-        if cv2.contourArea(lung_contour) < 1000:  # Пропускаем мелкие артефакты
+        if cv2.contourArea(lung_contour) < 1000:
             continue
-            
-        # Создаем маску одного легкого
+
         lung_roi_mask = numpy.zeros_like(lungs_mask)
         cv2.drawContours(lung_roi_mask, [lung_contour], -1, color=1, thickness=cv2.FILLED)
-        
-        # Находим кости внутри этого легкого
+
         bones_inside_lung = bone_mask & lung_roi_mask
-        
-        # Если есть кости внутри легкого - убираем их
+
         if numpy.sum(bones_inside_lung) > 0:
-            cleaned[bones_inside_lung > 0] = 4  # Заменяем на легкие
-    
+            cleaned[bones_inside_lung > 0] = 4
+
     # 3. Находим контуры тела и убираем кости СНАРУЖИ тела
     body_contours, _ = cv2.findContours(body_mask_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Создаем маску "внутри тела"
+
     inside_body_mask = numpy.zeros_like(body_mask_binary)
     for contour in body_contours:
-        if cv2.contourArea(contour) > 10000:  # Только большие контуры
+        if cv2.contourArea(contour) > 10000:
             cv2.drawContours(inside_body_mask, [contour], -1, color=1, thickness=cv2.FILLED)
-    
-    # Убираем все кости которые снаружи тела
+
     outside_body = inside_body_mask == 0
     cleaned[outside_body & (cleaned == 1)] = 0
-    
-    # 4. Убираем мелкие артефакты для всех классов
+
+    # 4. Эрозия ТОЛЬКО для класса bone (1) — остальные классы не трогаем
+    bone_mask = (cleaned == 1).astype(numpy.uint8)
+    kernel = numpy.ones((2, 2), numpy.uint8)
+    eroded_bones = cv2.erode(bone_mask, kernel, iterations=1)
+
+    # Обнуляем только те пиксели, которые БЫЛИ костями, но после эрозии исчезли
+    cleaned[(bone_mask == 1) & (eroded_bones == 0)] = 0
+
+    # 5. Убираем мелкие артефакты для всех классов
     for class_id in [1, 2, 3, 4]:
         class_mask = (cleaned == class_id).astype(numpy.uint8)
         labeled, num_features = ndimage.label(class_mask)
-        
-        min_size = 200
+
+        min_size = 20
         for i in range(1, num_features + 1):
             component_size = numpy.sum(labeled == i)
             if component_size < min_size:
                 cleaned[labeled == i] = 0
-    
+
     return cleaned
 
 
@@ -1530,23 +1530,22 @@ def clean_segmentation_masks_advanced(axial_segmentations: numpy.ndarray, only_b
     Расширенная версия с дополнительной проверкой мышц внутри легких.
     """
     cleaned = clean_segmentation_masks(axial_segmentations, only_body_mask)
-    
-    # Также проверяем мышцы внутри легких
+
     lungs_mask = (cleaned == 4).astype(numpy.uint8)
     muscles_mask = (cleaned == 2).astype(numpy.uint8)
-    
+
     lung_contours, _ = cv2.findContours(lungs_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+
     for lung_contour in lung_contours:
         if cv2.contourArea(lung_contour) < 1000:
             continue
-            
+
         lung_roi_mask = numpy.zeros_like(lungs_mask)
         cv2.drawContours(lung_roi_mask, [lung_contour], -1, color=1, thickness=cv2.FILLED)
-        
+
         muscles_inside_lung = muscles_mask & lung_roi_mask
-        
+
         if numpy.sum(muscles_inside_lung) > 0:
             cleaned[muscles_inside_lung > 0] = 4
-    
+
     return cleaned
