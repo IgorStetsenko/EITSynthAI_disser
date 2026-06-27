@@ -8,6 +8,7 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
+      - ./generation_results:/app/generation_results 
     networks:
       - app-network
 

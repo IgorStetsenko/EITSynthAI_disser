@@ -235,6 +235,8 @@ class DICOMSequencesToMask(DICOMabc):
 
             segmentation_masks_image = create_segmentations_masks(axial_segmentations_mask)
             color_output = create_color_output(segmentation_masks_image, only_body_mask)
+            color_output = cv2.rotate(color_output, cv2.ROTATE_180)
+            cv2.imwrite('/app/generation_results/color_output.jpg', color_output)
             list_crd_from_color_output = create_list_crd_from_color_output(color_output, pixel_spacing, only_body_mask)
 
             segmentation_results_cnt = create_segmentation_results_cnt(axial_segmentations_mask)
@@ -244,7 +246,7 @@ class DICOMSequencesToMask(DICOMabc):
                 segmentation_masks_image, only_body_mask, ribs_annotated_image,
                 axial_slice_norm_body, img_mesh
             )
-            # generate_eit_dataset(list_crd_from_color_output)
+            generate_eit_dataset(list_crd_from_color_output)
             answer = create_answer(segmentation_masks_full_image, segmentation_results_cnt, segmentation_time, saved_file_name, simulation_time)
 
 
@@ -457,7 +459,7 @@ class DICOMToMask(DICOMSequencesToMask):
                 segmentation_masks_image, only_body_mask, ribs_annotated_image,
                 axial_slice_norm_body, img_mesh
             )
-            # generate_eit_dataset(list_crd_from_color_output)
+            generate_eit_dataset(list_crd_from_color_output)
             answer = create_answer(segmentation_masks_full_image, segmentation_results_cnt, segmentation_time, saved_file_name, simulation_time)
         except:
             logger.error("🔴 Ошибка в классе DICOMToMask, функция get_coordinate_slice_from_dicom_frame")
@@ -468,4 +470,5 @@ class DICOMToMask(DICOMSequencesToMask):
 
 
 
-            
+class EIT_reconstruct(DICOMSequencesToMask):
+    pass

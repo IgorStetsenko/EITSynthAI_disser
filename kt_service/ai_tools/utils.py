@@ -893,10 +893,12 @@ def create_segmentation_masks_full_image(segmentation_masks_image=None, only_bod
         # 1. Обрабатываем ribs_annotated_image, если он есть
         if ribs_annotated_image is not None and numpy.any(ribs_annotated_image):
             images_to_combine.append(("1. Ribs Annotated", ribs_annotated_image))
+            cv2.imwrite('/app/generation_results/Ribs_Annotated.jpg', ribs_annotated_image)
 
         # 2. Обрабатываем axial_slice_norm_body, если он есть
         if axial_slice_norm_body is not None and numpy.any(axial_slice_norm_body):
             images_to_combine.append(("2. Axial Slice", axial_slice_norm_body))
+            cv2.imwrite('/app/generation_results/Axial_Slice.jpg', axial_slice_norm_body)
 
         # 3. Обрабатываем segmentation_masks_image, если он есть
         if segmentation_masks_image is not None and len(segmentation_masks_image) > 0:
@@ -905,13 +907,24 @@ def create_segmentation_masks_full_image(segmentation_masks_image=None, only_bod
             if axial_slice_norm_body is not None and numpy.any(axial_slice_norm_body):
                 axial_slice_norm_body_with_color = overlay_masks_with_transparency(axial_slice_norm_body, color_output)
                 images_to_combine.append(("3. Combined View", axial_slice_norm_body_with_color))
+                cv2.imwrite('/app/generation_results/Combined_View.jpg', axial_slice_norm_body_with_color)
 
             images_to_combine.append(("4. Color Masks", color_output))
+            cv2.imwrite('/app/generation_results/Color_Masks.jpg', color_output)
 
             # Добавляем отдельные маски из словаря
             for idx, (key, image) in enumerate(segmentation_masks_image.items(), start=5):
                 if image is not None and numpy.any(image):
                     images_to_combine.append((f"{idx}. {key}", image))
+                    # Сохраняем отдельную маску ткани
+                    save_path = f'/app/generation_results/{key}.jpg'
+                    if len(image.shape) == 2:
+                        # Если маска одноканальная — сохраняем как есть (или конвертируем)
+                        cv2.imwrite(save_path, image)
+                    else:
+                        cv2.imwrite(save_path, image)
+                    
+                    print(f"✅ Сохранена маска ткани: {save_path}")
 
         # 4. Обрабатываем img_mesh, если он есть (добавляем в конец)
         if img_mesh is not None and numpy.any(img_mesh):
@@ -1178,6 +1191,7 @@ def get_only_body_mask_contours(only_body_mask):
 
     :param only_body_mask: opencv image
     """
+    only_body_mask = cv2.rotate(only_body_mask, cv2.ROTATE_180)
     polygon_str = []
     try:
         body_binary = []

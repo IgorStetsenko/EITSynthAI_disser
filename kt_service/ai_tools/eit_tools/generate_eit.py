@@ -748,12 +748,13 @@ def _plot_debug(points, tris, elem_physicals, electrodes_final, cfg, phys_mappin
     ax1, ax2 = axes
 
     tag_colors = {
-        phys_mapping["background"]: "#CD853F",
-        phys_mapping["bone"]:       "#F5F5F5",
-        phys_mapping["muscle"]:     "#DC143C",
-        phys_mapping["lung"]:       "#00BFFF",
-        phys_mapping["fat"]:        "#FFD700",
+        phys_mapping["background"]: "#000000",
+        phys_mapping["bone"]:       "#FFFFFF",
+        phys_mapping["muscle"]:     "#FF0000",
+        phys_mapping["lung"]:       "#00D9FF",
+        phys_mapping["fat"]:        "#BBFF00",
     }
+
     tag_names = {
         phys_mapping["background"]: "Фон/тело",
         phys_mapping["bone"]:       "Кость",
@@ -910,17 +911,17 @@ def _plot_class_masks(points, tris, elem_physicals, electrodes_final, cfg, phys_
             cmap="viridis", shading="flat",
         )
 
-        if show_both:
-            ax2.plot(electrodes_standard[:, 0], electrodes_standard[:, 1], "ro",
-                     markersize=10, markeredgecolor="white", markeredgewidth=1.5,
-                     label="Исходное положение", zorder=10)
-            ax2.plot(electrodes_optimized[:, 0], electrodes_optimized[:, 1], "go",
-                     markersize=10, markeredgecolor="white", markeredgewidth=1.5,
-                     label="Оптимальное положение", zorder=11)
-        else:
-            ax2.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
-                     markersize=10, markeredgecolor="white", markeredgewidth=1.5,
-                     label="Электроды", zorder=10)
+        # if show_both:
+        #     ax2.plot(electrodes_standard[:, 0], electrodes_standard[:, 1], "ro",
+        #              markersize=10, markeredgecolor="white", markeredgewidth=1.5,
+        #              label="Исходное положение", zorder=10)
+        #     ax2.plot(electrodes_optimized[:, 0], electrodes_optimized[:, 1], "go",
+        #              markersize=10, markeredgecolor="white", markeredgewidth=1.5,
+        #              label="Оптимальное положение", zorder=11)
+        # else:
+        #     ax2.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
+        #              markersize=10, markeredgecolor="white", markeredgewidth=1.5,
+        #              label="Электроды", zorder=10)
 
         plt.colorbar(trip, ax=ax2, label="log10(σ)")
         ax2.set_aspect("equal")
@@ -1207,6 +1208,9 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
         "conductivity": cfg.conductivity,
         "lung_element_count": int(len(lung_elems)),
         "class_present": sorted(list(inclusions.keys())),
+        "phys_mapping": phys_mapping,
+        "breath_fps": cfg.breath_fps,              # ← ДОБАВИТЬ
+        "breath_period_sec": cfg.breath_period_sec, # ← ДОБАВИТЬ
     }
 
     with open(os.path.join(cfg.output_dir, f"{cfg.dataset_name}_meta.json"), "w", encoding="utf-8") as f:
