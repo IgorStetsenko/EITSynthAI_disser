@@ -165,7 +165,7 @@ def axial_to_sagittal(img_3d, patient_position, image_orientation, patient_orien
     return sagittal_view
 
 
-def search_number_axial_slice(detections, custom_number_slise=0, image_width=512):
+def search_number_axial_slice_old(detections, custom_number_slise=0, image_width=512):
     """
     Функция для поиска номера необходимого аксиального среза серии
         Args:
@@ -271,6 +271,87 @@ def search_number_axial_slice(detections, custom_number_slise=0, image_width=512
     return number_axial_slice_list
 
 
+
+
+def search_number_axial_slice(detections, custom_number_slise=0, image_width=512):
+    """ """
+    number_axial_slice_list = []
+    RIB_START = 5
+    RIB_END = 6
+    
+    # Инициализируем списки координат заранее, чтобы избежать ошибок в блоке except
+    left_side_coordinates = []
+    right_side_coordinates = []
+    sorted_left_side_coordinates = []
+    sorted_right_side_coordinates = []
+    
+    # Переводим 1-based индексы из констант в 0-based для доступа к элементам списка
+    idx1 = RIB_START - 1
+    idx2 = RIB_END - 1
+
+    try:
+        # Получаем абсолютные координаты среза
+        coordinates = detections.xyxy
+        logger.info(f"✅ Функция search_number_axial_slice | абсолютные координаты среза {coordinates}")
+        
+        # Находим середину изображения
+        midpoint = image_width / 2
+        logger.info(f"✅ Функция search_number_axial_slice | midpoint {midpoint}")
+        
+        # Фильтрация координат: разделяем на левую и правую сторону относительно середины
+        left_side_coordinates = [box for box in coordinates if box[0] < midpoint]
+        right_side_coordinates = [box for box in coordinates if box[0] > midpoint]
+        
+        # Сортировка по оси Y (по верхнему краю бокса, индекс 1) сверху вниз
+        sorted_left_side_coordinates = sorted(left_side_coordinates, key=lambda x: x[1])
+        sorted_right_side_coordinates = sorted(right_side_coordinates, key=lambda x: x[1])
+        
+        logger.info(f"✅ Функция search_number_axial_slice | sorted_left_side_coordinates (координаты левых рёбер) {sorted_left_side_coordinates}")
+        logger.info(f"✅ Функция search_number_axial_slice | sorted_right_side_coordinates (координаты правых рёбер) {sorted_right_side_coordinates}")
+        
+        # Проверяем, достаточно ли ребер обнаружено с обеих сторон для заданных индексов
+        if len(sorted_left_side_coordinates) <= idx2 or len(sorted_right_side_coordinates) <= idx2:
+            raise IndexError("Недостаточно ребер для выбранных индексов")
+        
+        # Вычисляем ЦЕНТРЫ выбранных рёбер по оси Y для правой стороны
+        # (y1 + y2) / 2 - это центр bounding box по вертикали
+        right_rib1_center = (sorted_right_side_coordinates[idx1][1] + sorted_right_side_coordinates[idx1][3]) / 2
+        right_rib2_center = (sorted_right_side_coordinates[idx2][1] + sorted_right_side_coordinates[idx2][3]) / 2
+        
+        # Вычисляем ЦЕНТРЫ выбранных рёбер по оси Y для левой стороны
+        left_rib1_center = (sorted_left_side_coordinates[idx1][1] + sorted_left_side_coordinates[idx1][3]) / 2
+        left_rib2_center = (sorted_left_side_coordinates[idx2][1] + sorted_left_side_coordinates[idx2][3]) / 2
+        
+        # Усредняем центры рёбер для каждой стороны (срез между 1 и 2 ребром)
+        right_slice = (right_rib1_center + right_rib2_center) / 2
+        left_slice = (left_rib1_center + left_rib2_center) / 2
+        
+        # Усредняем номер среза между левой и правой стороной
+        number_axial_slice = int((right_slice + left_slice) / 2)
+        
+        # Усредняем Y-координаты соответствующих ребер слева и справа (для отображения)
+        avg_rib1_y = int((right_rib1_center + left_rib1_center) / 2)
+        avg_rib2_y = int((right_rib2_center + left_rib2_center) / 2)
+        
+        # На всякий получаем усредненный номер первого ребра выбранного промежутка
+        number_axial_slice_list.append(avg_rib1_y)
+        # На всякий получаем усредненный номер второго ребра выбранного промежутка
+        number_axial_slice_list.append(avg_rib2_y)
+        # Корректируем номер среза, если выбран режим с коррекцией. Иначе прибавляется 0
+        number_axial_slice_list.append(number_axial_slice + custom_number_slise)
+        
+    except Exception as e:
+        # Логирование ошибки с указанием длин и содержимого списков с обеих сторон
+        logger.error(f"🔴 Ошибка в функции search_number_axial_slice | "
+                     f"sorted_left_side_coordinates_len {len(sorted_left_side_coordinates)} | "
+                     f"sorted_left_side_coordinates (координаты левых рёбер) {sorted_left_side_coordinates} | "
+                     f"sorted_right_side_coordinates_len {len(sorted_right_side_coordinates)} | "
+                     f"sorted_right_side_coordinates (координаты правых рёбер) {sorted_right_side_coordinates} | "
+                     f"Ошибка: {e}")
+                     
+    return number_axial_slice_list
+
+
 def classic_norm(volume, window_level=40, window_width=400):
     """
     Нормализует медицинское изображение (обычно КТ) в диапазон [0, 255] с использованием заданного окна.
@@ -316,28 +397,7 @@ def classic_norm(volume, window_level=40, window_width=400):
 
 
 def draw_annotate(ribs_detections, front_slice, axial_slice_list_numbers):
-    """
-    Визуализирует обнаруженные рёбра на фронтальном срезе КТ с аннотациями.
-
-    Функция выполняет:
-    1. Рисует bounding boxes вокруг обнаруженных рёбер
-    2. Добавляет горизонтальную линию-маркер уровня среза
-    3. Фильтрует и нумерует левые рёбра (отсортированные сверху вниз)
-    4. Возвращает аннотированное изображение в цветном формате
-
-    Args:
-        ribs_detections (sv.Detections): Объект с обнаружениями рёбер (содержит bounding boxes)
-        front_slice (numpy.ndarray): Фронтальный срез КТ в градациях серого
-        axial_slice_list_numbers (list): Список координат срезов для отображения маркера уровня
-
-    Returns:
-        numpy.ndarray: Цветное изображение с аннотациями (BGR формат)
-
-    Note:
-        - Левыми считаются рёбра, чей центр находится правее середины изображения
-        - Нумерация рёбер идёт сверху вниз (1 - самое верхнее левое ребро)
-        - Используется синий цвет для bounding boxes и зелёный для линии-маркера
-    """
+    """ """
     try:
         # Инициализируем аннотатор bounding boxes (синий цвет)
         box_annotator = sv.BoxAnnotator(color=sv.Color.BLUE)
@@ -353,44 +413,71 @@ def draw_annotate(ribs_detections, front_slice, axial_slice_list_numbers):
         )
 
         # 2. Добавляем горизонтальную зелёную линию - маркер уровня аксиального среза
-        last_slice_pos = axial_slice_list_numbers[-1]  # Позиция последнего среза
-        annotated_image = cv2.line(
-            img=annotated_image,
-            pt1=(0, last_slice_pos),  # Начало линии (левая граница)
-            pt2=(1000, last_slice_pos),  # Конец линии (правая граница)
-            color=(0, 255, 0),  # Зелёный цвет
-            thickness=1
-        )
+        if axial_slice_list_numbers:
+            last_slice_pos = axial_slice_list_numbers[-1]  # Позиция последнего среза
+            annotated_image = cv2.line(
+                img=annotated_image,
+                pt1=(0, last_slice_pos),  # Начало линии (левая граница)
+                pt2=(annotated_image.shape[1], last_slice_pos),  # Конец линии (ширина изображения)
+                color=(0, 255, 0),  # Зелёный цвет
+                thickness=1
+            )
 
-        # 3. Фильтрация и нумерация левых рёбер
+        # 3. Фильтрация, сортировка и нумерация левых и правых рёбер
         boxes = ribs_detections.xyxy  # Получаем координаты всех bounding boxes
         mid_x = annotated_image.shape[1] // 2  # Вычисляем середину изображения по X
 
-        # Фильтруем только левые рёбра (центр bbox'а правее середины)
-        left_boxes = []
+        # Разделяем рёбра на левую и правую части изображения
+        left_image_boxes = []
+        right_image_boxes = []
         for box in boxes:
             x1, y1, x2, y2 = box
             center_x = (x1 + x2) / 2
-            if center_x > mid_x:  # Критерий для левых рёбер
-                left_boxes.append(box)
+            if center_x < mid_x:
+                left_image_boxes.append(box)
+            else:
+                right_image_boxes.append(box)
 
-        left_boxes = numpy.array(left_boxes)  # Конвертируем в numpy array
+        # Конвертируем в numpy array (с защитой от пустых списков)
+        left_image_boxes = numpy.array(left_image_boxes) if left_image_boxes else numpy.empty((0, 4))
+        right_image_boxes = numpy.array(right_image_boxes) if right_image_boxes else numpy.empty((0, 4))
 
         # Сортируем левые рёбра по Y-координате (от верхних к нижним)
-        sorted_indices = numpy.argsort(left_boxes[:, 1])
-        sorted_left_boxes = left_boxes[sorted_indices]
+        if len(left_image_boxes) > 0:
+            sorted_indices_left = numpy.argsort(left_image_boxes[:, 1])
+            sorted_left_boxes = left_image_boxes[sorted_indices_left]
+        else:
+            sorted_left_boxes = []
 
-        # 4. Нумеруем отсортированные левые рёбра (1 - самое верхнее)
+        # Сортируем правые рёбра по Y-координате (от верхних к нижним)
+        if len(right_image_boxes) > 0:
+            sorted_indices_right = numpy.argsort(right_image_boxes[:, 1])
+            sorted_right_boxes = right_image_boxes[sorted_indices_right]
+        else:
+            sorted_right_boxes = []
+
+        # 4. Нумеруем отсортированные левые рёбра (зелёный цвет)
         for i, box in enumerate(sorted_left_boxes, start=1):
             x1, y1, x2, y2 = box
-            # Позиция текста - справа от bounding box (+5 пикселей от правой границы)
-            text_position = (int(x2) + 5, int(y2 - 2))
+            # Позиция текста - слева от bounding box, чтобы не перекрывать его
+            text_position = (int(x1) - 20, int(y2 - 2))
+            cv2.putText(img=annotated_image, text=str(i), org=text_position, 
+                        fontFace=cv2.FONT_HERSHEY_DUPLEX, fontScale=0.8, 
+                        color=(255, 255, 255), thickness=2)
 
-            # Рисуем номер ребра (дважды для лучшей видимости)
-            cv2.putText(img=annotated_image, text=str(i), org=text_position, fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.4,color=(255, 0, 0), thickness=1)
-    except:
-        logger.error(f"🔴 Ошибка в функции draw_annotate")
+        # Нумеруем отсортированные правые рёбра (зелёный цвет)
+        for i, box in enumerate(sorted_right_boxes, start=1):
+            x1, y1, x2, y2 = box
+            # Позиция текста - справа от bounding box
+            text_position = (int(x2) + 5, int(y2 - 2))
+            cv2.putText(img=annotated_image, text=str(i), org=text_position, 
+                        fontFace=cv2.FONT_HERSHEY_DUPLEX, fontScale=0.8, 
+                        color=(255, 255, 255), thickness=2)
+
+    except Exception as e:
+        logger.error(f"🔴 Ошибка в функции draw_annotate: {e}")
         annotated_image = []
+        
     return annotated_image
 
 
