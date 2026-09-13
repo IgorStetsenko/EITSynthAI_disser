@@ -313,29 +313,30 @@ def search_number_axial_slice(detections, custom_number_slise=0, image_width=512
         if len(sorted_left_side_coordinates) <= idx2 or len(sorted_right_side_coordinates) <= idx2:
             raise IndexError("Недостаточно ребер для выбранных индексов")
         
-        # Вычисляем ЦЕНТРЫ выбранных рёбер по оси Y для правой стороны
+        # Вычисляем ЦЕНТРЫ 5-го и 6-го рёбер по оси Y для правой стороны
         # (y1 + y2) / 2 - это центр bounding box по вертикали
         right_rib1_center = (sorted_right_side_coordinates[idx1][1] + sorted_right_side_coordinates[idx1][3]) / 2
         right_rib2_center = (sorted_right_side_coordinates[idx2][1] + sorted_right_side_coordinates[idx2][3]) / 2
         
-        # Вычисляем ЦЕНТРЫ выбранных рёбер по оси Y для левой стороны
+        # Вычисляем ЦЕНТРЫ 5-го и 6-го рёбер по оси Y для левой стороны
         left_rib1_center = (sorted_left_side_coordinates[idx1][1] + sorted_left_side_coordinates[idx1][3]) / 2
         left_rib2_center = (sorted_left_side_coordinates[idx2][1] + sorted_left_side_coordinates[idx2][3]) / 2
         
-        # Усредняем центры рёбер для каждой стороны (срез между 1 и 2 ребром)
-        right_slice = (right_rib1_center + right_rib2_center) / 2
-        left_slice = (left_rib1_center + left_rib2_center) / 2
+        # Срез между 5-м и 6-м межреберным промежутком — это середина (центр по Y) 6-го ребра.
+        # Берем Y-координату центра 6-го ребра с обеих сторон.
+        right_slice = right_rib2_center
+        left_slice = left_rib2_center
         
-        # Усредняем номер среза между левой и правой стороной
+        # Усредняем номер среза (центр 6-го ребра) между левой и правой стороной
         number_axial_slice = int((right_slice + left_slice) / 2)
         
-        # Усредняем Y-координаты соответствующих ребер слева и справа (для отображения)
+        # Усредняем Y-координаты соответствующих ребер слева и справа (для отображения/отладки)
         avg_rib1_y = int((right_rib1_center + left_rib1_center) / 2)
         avg_rib2_y = int((right_rib2_center + left_rib2_center) / 2)
         
-        # На всякий получаем усредненный номер первого ребра выбранного промежутка
+        # На всякий получаем усредненный номер 5-го ребра выбранного промежутка
         number_axial_slice_list.append(avg_rib1_y)
-        # На всякий получаем усредненный номер второго ребра выбранного промежутка
+        # На всякий получаем усредненный номер 6-го ребра выбранного промежутка
         number_axial_slice_list.append(avg_rib2_y)
         # Корректируем номер среза, если выбран режим с коррекцией. Иначе прибавляется 0
         number_axial_slice_list.append(number_axial_slice + custom_number_slise)

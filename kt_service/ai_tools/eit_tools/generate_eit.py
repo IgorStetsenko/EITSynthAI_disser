@@ -1,10 +1,3 @@
-"""
-Генерация датасета ЭИТ с использованием gmsh.
-- Добавлен слой кожи (skin) как внешнее кольцо.
-- Результаты сохраняются в три папки: optimized/, uniform/, no_electrodes/
-- Файлы внутри папок имеют одинаковые имена без суффиксов.
-- Электроды рисуются на всех plot'ах.
-"""
 import json
 import os
 from dataclasses import dataclass, field
@@ -28,6 +21,8 @@ import random
 GeometryLike = Union[Polygon, MultiPolygon]
 
 
+
+
 # ============================================================
 # 1. КОНФИГУРАЦИЯ
 # ============================================================
@@ -43,8 +38,12 @@ class EITConfig:
         "skin": 0.30,
     })
     breath_period_sec: float = 4.0
+    breath_insp_sec: float = 1.2   # Длительность вдоха
+    breath_exp_sec: float = 1.8    # Длительность выдоха
+    breath_pause_sec: float = 1.0  # Длительность паузы (апное)
     breath_fps: float = 10.0
     breath_n_cycles: int = 3
+    breathing_type: str = "biot"  # normal, cheyne_stokes, biot, kussmaul, gasping
 
     mesh_characteristic_length: float = 3.5
     mesh_order: int = 1
@@ -504,7 +503,32 @@ class EITElectrodeOptimizer:
 # ============================================================
 # РАССТАНОВКА ЭЛЕКТРОДОВ
 # ============================================================
-def place_electrodes(body_poly: Polygon, n: int, min_dist: float = 5, max_attempts: int = 10000) -> np.ndarray:
+def place_electrodes_uniform(body_poly: Polygon, n: int) -> np.ndarray:
+    """Расставляет электроды строго равномерно по длине контура."""
+    if n == 0:
+        return np.empty((0, 2), dtype=float)
+    ext = np.array(body_poly.exterior.coords, dtype=float)
+    diffs = np.diff(ext, axis=0)
+    seg_len = np.linalg.norm(diffs, axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(seg_len)])
+    total_len = cum[-1]
+
+    def get_point_at_dist(s: float) -> np.ndarray:
+        idx = np.searchsorted(cum, s, side="right") - 1
+        idx = min(max(idx, 0), len(seg_len) - 1)
+        t = (s - cum[idx]) / (seg_len[idx] + 1e-12)
+        return ext[idx] * (1.0 - t) + ext[idx + 1] * t
+
+    step = total_len / n
+    electrodes = []
+    for i in range(n):
+        s = i * step
+        electrodes.append(get_point_at_dist(s))
+    return np.array(electrodes, dtype=float)
+
+
+def place_electrodes_random(body_poly: Polygon, n: int, min_dist: float = 5, max_attempts: int = 10000) -> np.ndarray:
+    """Расставляет электроды случайно, проверяя минимальное расстояние между ними."""
     if n == 0:
         return np.empty((0, 2), dtype=float)
     ext = np.array(body_poly.exterior.coords, dtype=float)
@@ -548,23 +572,59 @@ def find_nearest_nodes(points: np.ndarray, electrodes: np.ndarray) -> np.ndarray
 
 
 def assemble_stiffness(points: np.ndarray, tris: np.ndarray, sigma: np.ndarray) -> sp.csr_matrix:
+    """
+    Векторизованная сборка глобальной матрицы жесткости.
+    Работает в десятки раз быстрее циклового аналога и избегает ошибок форм массивов.
+    """
+    points = np.asarray(points)
+    tris = np.asarray(tris)
     n_pts = len(points)
-    rows, cols, vals = [], [], []
-    for e, idx in enumerate(tris):
-        xy = points[idx]
-        x = xy[:, 0]
-        y = xy[:, 1]
-        area = 0.5 * abs((x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]))
-        if area < 1e-12:
-            continue
-        b = np.array([y[1] - y[2], y[2] - y[0], y[0] - y[1]], dtype=float)
-        c = np.array([x[2] - x[1], x[0] - x[2], x[1] - x[0]], dtype=float)
-        ke = sigma[e] * (np.outer(b, b) + np.outer(c, c)) / (4.0 * area)
-        for i_loc in range(3):
-            for j_loc in range(3):
-                rows.append(int(idx[i_loc]))
-                cols.append(int(idx[j_loc]))
-                vals.append(float(ke[i_loc, j_loc]))
+    
+    if len(tris) == 0:
+        return sp.csr_matrix((n_pts, n_pts))
+    
+    # Получаем координаты вершин для всех треугольников сразу (N, 3, 2)
+    xy = points[tris]
+    x = xy[:, :, 0]
+    y = xy[:, :, 1]
+    
+    x0, x1, x2 = x[:, 0], x[:, 1], x[:, 2]
+    y0, y1, y2 = y[:, 0], y[:, 1], y[:, 2]
+    
+    # Вычисляем площади всех треугольников
+    area = 0.5 * np.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0))
+    
+    # Фильтруем треугольники с нулевой или очень маленькой площадью
+    valid = area >= 1e-12
+    if not np.any(valid):
+        return sp.csr_matrix((n_pts, n_pts))
+        
+    x0, x1, x2 = x0[valid], x1[valid], x2[valid]
+    y0, y1, y2 = y0[valid], y1[valid], y2[valid]
+    area = area[valid]
+    sigma_valid = sigma[valid]
+    tris_valid = tris[valid]
+    
+    # Вычисляем коэффициенты b и c для всех треугольников
+    b = np.array([y1 - y2, y2 - y0, y0 - y1]).T  # (N, 3)
+    c = np.array([x2 - x1, x0 - x2, x1 - x0]).T  # (N, 3)
+    
+    # Вычисляем внешние произведения для всех треугольников
+    bb = b[:, :, None] * b[:, None, :]  # (N, 3, 3)
+    cc = c[:, :, None] * c[:, None, :]  # (N, 3, 3)
+    
+    # Матрица жесткости для каждого элемента
+    ke = sigma_valid[:, None, None] * (bb + cc) / (4.0 * area[:, None, None])
+    
+    # Индексы строк и столбцов для разреженной матрицы
+    rows = np.broadcast_to(tris_valid[:, :, None], (len(tris_valid), 3, 3))
+    cols = np.broadcast_to(tris_valid[:, None, :], (len(tris_valid), 3, 3))
+    
+    # Flatten для передачи в coo_matrix
+    rows = rows.flatten()
+    cols = cols.flatten()
+    vals = ke.flatten()
+    
     return sp.coo_matrix((vals, (rows, cols)), shape=(n_pts, n_pts)).tocsr()
 
 
@@ -621,14 +681,13 @@ def _conductivity_by_tag(elem_physicals: np.ndarray, cfg: EITConfig, phys_mappin
     return sigma
 
 
+
 def _plot_debug(points, tris, elem_physicals, electrodes_final, cfg, phys_mapping,
-                electrodes_standard=None, electrodes_optimized=None, lung_elems=None,
-                save_dir=None):
+                all_electrodes: dict, lung_elems=None, save_dir=None, folder_name=""):
     if save_dir is None:
         save_dir = cfg.output_dir
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
-    ax1, ax2 = axes
+    # ---------- общие данные ----------
     tag_colors = {
         phys_mapping["background"]: "#000000",
         phys_mapping["bone"]:       "#FFFFFF",
@@ -646,76 +705,152 @@ def _plot_debug(points, tris, elem_physicals, electrodes_final, cfg, phys_mappin
         phys_mapping["skin"]:       "Кожа",
     }
 
-    patches, colors = [], []
-    for i, tri in enumerate(tris):
-        patches.append(MplPolygon(points[tri], closed=True))
-        colors.append(tag_colors.get(int(elem_physicals[i]), "#808080"))
+    patches = [MplPolygon(points[tri], closed=True) for tri in tris]
+    face_colors = [tag_colors.get(int(elem_physicals[i]), "#808080") for i in range(len(tris))]
 
-    ax1.add_collection(PatchCollection(patches, facecolor=colors, edgecolor="none", alpha=0.95))
-    ax2.add_collection(PatchCollection(patches, facecolor=colors, edgecolor="none", alpha=0.95))
+    colors_map = {
+        'uniform':   ('ro', 'Равномерное'),
+        'random':    ('yo', 'Случайное'),
+        'optimized': ('go', 'Оптимизированное')
+    }
 
-    show_both = (electrodes_standard is not None and electrodes_optimized is not None)
-
-    if show_both:
-        ax1.plot(electrodes_standard[:, 0], electrodes_standard[:, 1], "ro",
-                 markersize=10, markeredgecolor="black", markeredgewidth=1.5,
-                 label="Равномерное", zorder=10)
-        ax2.plot(electrodes_standard[:, 0], electrodes_standard[:, 1], "ro",
-                 markersize=8, markeredgecolor="white", markeredgewidth=1.5,
-                 label="Равномерное", zorder=10)
-        ax1.plot(electrodes_optimized[:, 0], electrodes_optimized[:, 1], "go",
-                 markersize=10, markeredgecolor="black", markeredgewidth=1.5,
-                 label="Оптимизированное", zorder=11)
-        ax2.plot(electrodes_optimized[:, 0], electrodes_optimized[:, 1], "go",
-                 markersize=8, markeredgecolor="white", markeredgewidth=1.5,
-                 label="Оптимизированное", zorder=11)
+    # ---------- какие электроды показывать ----------
+    if folder_name == "optimized":
+        plot_keys = ['optimized']
+    elif folder_name == "random":
+        plot_keys = ['random', 'optimized']
+    elif folder_name == "uniform":
+        plot_keys = ['uniform', 'optimized']
     else:
-        if electrodes_final is not None and len(electrodes_final) > 0:
-            ax1.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
-                     markersize=10, markeredgecolor="black", markeredgewidth=1.5,
-                     label="Электроды", zorder=10)
-            ax2.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
-                     markersize=8, markeredgecolor="white", markeredgewidth=1.5,
-                     label="Электроды", zorder=10)
+        plot_keys = [key for key in ['optimized', 'random', 'uniform']
+                     if key in all_electrodes and all_electrodes[key] is not None]
+        if not plot_keys and electrodes_final is not None:
+            plot_keys = ['final']
 
-    ax1.set_aspect("equal")
-    ax1.set_title("Ткани", fontsize=14, fontweight="bold")
-    ax1.grid(True, alpha=0.3)
-    ax1.set_xlim(points[:, 0].min() - 20, points[:, 0].max() + 20)
-    ax1.set_ylim(points[:, 1].min() - 20, points[:, 1].max() + 20)
+    # ---------- вспомогательные функции ----------
+    def _make_tissue_patches_collection():
+        return PatchCollection(patches, facecolor=face_colors,
+                               edgecolor="none", alpha=0.95)
 
-    tissue_legend = [
-        Line2D([0], [0], marker="s", color="w",
-               markerfacecolor=tag_colors[tag], markersize=10,
-               label=tag_names[tag])
-        for tag in sorted(tag_colors.keys())
-    ]
-    ax1.legend(handles=tissue_legend, loc="upper right", fontsize=9)
+    def _draw_electrodes(ax):
+        """Рисует нужные электроды на указанной оси."""
+        plotted_any = False
+        for key in plot_keys:
+            if key == 'final':
+                if electrodes_final is not None and len(electrodes_final) > 0:
+                    ax.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
+                            markersize=10, markeredgecolor="black", markeredgewidth=1.5,
+                            zorder=12)
+                    plotted_any = True
+            else:
+                fmt, _ = colors_map[key]
+                if key in all_electrodes and all_electrodes[key] is not None:
+                    elec = all_electrodes[key]
+                    ax.plot(elec[:, 0], elec[:, 1], fmt,
+                            markersize=10, markeredgecolor="black", markeredgewidth=1.5,
+                            zorder=11)
+                    plotted_any = True
+
+        if not plotted_any and electrodes_final is not None and len(electrodes_final) > 0:
+            ax.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
+                    markersize=10, markeredgecolor="black", markeredgewidth=1.5,
+                    zorder=12)
+
+    def _build_electrode_legend_handles():
+        handles = []
+        for key in plot_keys:
+            if key in colors_map:
+                fmt, label = colors_map[key]
+                marker_color = fmt[0]
+                handles.append(Line2D([0], [0], marker='o', color='w',
+                                      markerfacecolor=marker_color, markersize=10,
+                                      markeredgecolor='black', markeredgewidth=1.5,
+                                      label=label))
+        return handles
+
+    def _build_tissue_legend_handles():
+        return [
+            Line2D([0], [0], marker="s", color="w",
+                   markerfacecolor=tag_colors[tag], markersize=10,
+                   label=tag_names[tag])
+            for tag in sorted(tag_colors.keys())
+        ]
+
+    def _setup_axes(ax, title):
+        ax.set_aspect("equal")
+        ax.set_title(title, fontsize=14, fontweight="bold")
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(points[:, 0].min() - 20, points[:, 0].max() + 20)
+        ax.set_ylim(points[:, 1].min() - 20, points[:, 1].max() + 20)
+
+    # ======================================================
+    # КАРТИНКА 1: ТКАНИ + электроды + легенда электродов + легенда тканей
+    # ======================================================
+    fig1, ax_t = plt.subplots(figsize=(11, 9))  # Увеличил размер
+    ax_t.add_collection(_make_tissue_patches_collection())
+    _draw_electrodes(ax_t)
+    _setup_axes(ax_t, " ")
+
+    electrode_handles = _build_electrode_legend_handles()
+    tissue_handles = _build_tissue_legend_handles()
+
+    # Создаем объединенную легенду
+    all_handles = electrode_handles + tissue_handles
+    if all_handles:
+        # Разделяем легенду на две части
+        leg1 = ax_t.legend(handles=electrode_handles,
+                          loc="upper left", bbox_to_anchor=(0.02, 0.98),
+                          fontsize=10, framealpha=0.95, title="Электроды",
+                          borderaxespad=0.)
+        ax_t.add_artist(leg1)  # Добавляем первую легенду как художественный объект
+        
+        leg2 = ax_t.legend(handles=tissue_handles,
+                          loc="center left", bbox_to_anchor=(1.02, 0.5),
+                          fontsize=9, framealpha=0.95, title="",
+                          borderaxespad=0.)
+        ax_t.add_artist(leg2)
+
+    # Сохраняем с увеличенным bbox
+    fig1.savefig(os.path.join(save_dir, "mesh_preview_tissues.png"),
+                 dpi=220, bbox_inches="tight", pad_inches=0.3)
+    plt.close(fig1)
+
+    # ======================================================
+    # КАРТИНКА 2: ПРОВОДИМОСТИ + электроды + легенда электродов
+    # ======================================================
+    fig2, ax_c = plt.subplots(figsize=(10, 8))  # Увеличил размер
 
     sigma = _conductivity_by_tag(elem_physicals, cfg, phys_mapping)
-    trip = ax2.tripcolor(
+    trip = ax_c.tripcolor(
         points[:, 0], points[:, 1], tris,
         facecolors=np.log10(np.clip(sigma, 1e-8, None)),
         cmap="viridis", shading="flat",
     )
     if lung_elems is not None and len(lung_elems) > 0:
         lung_points = points[tris[lung_elems]].mean(axis=1)
-        ax2.scatter(lung_points[:, 0], lung_points[:, 1],
-                    c="red", s=5, alpha=0.35, label="Лёгкие", zorder=5)
+        ax_c.scatter(lung_points[:, 0], lung_points[:, 1],
+                     c="red", s=5, alpha=0.35, zorder=5)
 
-    plt.colorbar(trip, ax=ax2, label="log10(σ)")
-    ax2.set_aspect("equal")
-    ax2.set_title("Проводимости (log scale)", fontsize=14, fontweight="bold")
-    ax2.legend(loc="upper right", fontsize=9)
-    ax2.grid(True, alpha=0.3)
+    _draw_electrodes(ax_c)
+    _setup_axes(ax_c, "Проводимости (log scale)")
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, "mesh_preview.png"), dpi=220, bbox_inches="tight")
-    plt.close(fig)
+    plt.colorbar(trip, ax=ax_c, label="log10(σ)", pad=0.02)
+
+    if electrode_handles:
+        ax_c.legend(handles=electrode_handles,
+                   loc="upper left", bbox_to_anchor=(0.02, 0.98),
+                   fontsize=10, framealpha=0.95, title="Электроды",
+                   borderaxespad=0.)
+
+    fig2.savefig(os.path.join(save_dir, "mesh_preview_conductivity.png"),
+                 dpi=220, bbox_inches="tight", pad_inches=0.3)
+    plt.close(fig2)
+
+
 
 
 def _plot_class_masks(points, tris, elem_physicals, electrodes_final, cfg, phys_mapping,
-                      electrodes_standard=None, electrodes_optimized=None, save_dir=None):
+                      all_electrodes: dict, save_dir=None, folder_name=""):
     if save_dir is None:
         save_dir = cfg.output_dir
     if not cfg.debug_plot_each_class:
@@ -727,7 +862,27 @@ def _plot_class_masks(points, tris, elem_physicals, electrodes_final, cfg, phys_
         ("lung",   "Лёгкие"),
         ("fat",    "Жир"),
     ]
-    show_both = (electrodes_standard is not None and electrodes_optimized is not None)
+    
+    colors_map = {
+        'uniform': ('ro', 'Равномерное'),
+        'random': ('yo', 'Случайное'),
+        'optimized': ('go', 'Оптимизированное')
+    }
+    zorder_map = {'uniform': 10, 'random': 11, 'optimized': 12}
+
+    # Определяем, какие электроды рисовать в зависимости от папки
+    if folder_name == "optimized":
+        plot_keys = ['optimized']
+    elif folder_name == "random":
+        plot_keys = ['random', 'optimized']
+    elif folder_name == "uniform":
+        plot_keys = ['uniform', 'optimized']
+    else:
+        # Если папка не указана или другая — рисуем все доступные
+        plot_keys = [key for key in ['optimized', 'random', 'uniform'] 
+                     if key in all_electrodes and all_electrodes[key] is not None]
+        if not plot_keys and electrodes_final is not None:
+            plot_keys = ['final']
 
     for key, title in class_info:
         tag = phys_mapping[key]
@@ -739,18 +894,28 @@ def _plot_class_masks(points, tris, elem_physicals, electrodes_final, cfg, phys_
         ax1.triplot(points[:, 0], points[:, 1], tris,
                     color="lightgray", lw=0.2, alpha=0.6)
 
-        if show_both:
-            ax1.plot(electrodes_standard[:, 0], electrodes_standard[:, 1], "ro",
+        plotted_any = False
+        for k in plot_keys:
+            if k == 'final':
+                if electrodes_final is not None and len(electrodes_final) > 0:
+                    ax1.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
+                             markersize=12, markeredgecolor="black", markeredgewidth=1.5,
+                             label="Электроды", zorder=10)
+                    plotted_any = True
+            else:
+                fmt, label = colors_map[k]
+                if k in all_electrodes and all_electrodes[k] is not None:
+                    elec = all_electrodes[k]
+                    ax1.plot(elec[:, 0], elec[:, 1], fmt,
+                             markersize=12, markeredgecolor="black", markeredgewidth=1.5,
+                             label=label, zorder=zorder_map[k])
+                    plotted_any = True
+        
+        # Если вообще ничего не нарисовали — рисуем electrodes_final
+        if not plotted_any and electrodes_final is not None and len(electrodes_final) > 0:
+            ax1.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
                      markersize=12, markeredgecolor="black", markeredgewidth=1.5,
-                     label="Равномерное", zorder=10)
-            ax1.plot(electrodes_optimized[:, 0], electrodes_optimized[:, 1], "go",
-                     markersize=12, markeredgecolor="black", markeredgewidth=1.5,
-                     label="Оптимизированное", zorder=11)
-        else:
-            if electrodes_final is not None and len(electrodes_final) > 0:
-                ax1.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
-                         markersize=12, markeredgecolor="black", markeredgewidth=1.5,
-                         label="Электроды", zorder=10)
+                     label="Электроды", zorder=10)
 
         if len(idx) == 0:
             ax1.text(0.5, 0.5,
@@ -786,18 +951,27 @@ def _plot_class_masks(points, tris, elem_physicals, electrodes_final, cfg, phys_
             cmap="viridis", shading="flat",
         )
 
-        if show_both:
-            ax2.plot(electrodes_standard[:, 0], electrodes_standard[:, 1], "ro",
+        plotted_any2 = False
+        for k in plot_keys:
+            if k == 'final':
+                if electrodes_final is not None and len(electrodes_final) > 0:
+                    ax2.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
+                             markersize=10, markeredgecolor="white", markeredgewidth=1.5,
+                             label="Электроды", zorder=10)
+                    plotted_any2 = True
+            else:
+                fmt, label = colors_map[k]
+                if k in all_electrodes and all_electrodes[k] is not None:
+                    elec = all_electrodes[k]
+                    ax2.plot(elec[:, 0], elec[:, 1], fmt,
+                             markersize=10, markeredgecolor="white", markeredgewidth=1.5,
+                             label=label, zorder=zorder_map[k])
+                    plotted_any2 = True
+        
+        if not plotted_any2 and electrodes_final is not None and len(electrodes_final) > 0:
+            ax2.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
                      markersize=10, markeredgecolor="white", markeredgewidth=1.5,
-                     label="Равномерное", zorder=10)
-            ax2.plot(electrodes_optimized[:, 0], electrodes_optimized[:, 1], "go",
-                     markersize=10, markeredgecolor="white", markeredgewidth=1.5,
-                     label="Оптимизированное", zorder=11)
-        else:
-            if electrodes_final is not None and len(electrodes_final) > 0:
-                ax2.plot(electrodes_final[:, 0], electrodes_final[:, 1], "go",
-                         markersize=10, markeredgecolor="white", markeredgewidth=1.5,
-                         label="Электроды", zorder=10)
+                     label="Электроды", zorder=10)
 
         plt.colorbar(trip, ax=ax2, label="log10(σ)")
         ax2.set_aspect("equal")
@@ -933,7 +1107,8 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
     )
 
     print("\n[Main] Расстановка электродов...")
-    electrodes_standard = place_electrodes(body_poly, cfg.n_electrodes)
+    electrodes_uniform = place_electrodes_uniform(body_poly, cfg.n_electrodes)
+    electrodes_random = place_electrodes_random(body_poly, cfg.n_electrodes)
 
     if use_optimization:
         print("[Main] Запуск оптимизации размещения электродов (ГА)...")
@@ -946,50 +1121,126 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
         electrodes_optimized = optimizer.optimize()
         print("[Main] Электроды оптимизированы.")
     else:
-        electrodes_optimized = electrodes_standard
+        electrodes_optimized = electrodes_uniform
         print("[Main] Используются равномерные электроды без оптимизации.")
+
+    all_electrodes = {
+        'uniform': electrodes_uniform,
+        'random': electrodes_random,
+        'optimized': electrodes_optimized
+    }
 
     lung_mask = elem_physicals == phys_mapping["lung"]
     lung_elems = np.where(lung_mask)[0]
     print(f"\n[Main] Элементов лёгких: {len(lung_elems)} из {len(tris)} "
           f"({len(lung_elems) / len(tris) * 100:.1f}%)")
 
+
+    def _generate_breath_pattern(pattern_type: str, t: np.ndarray, period: float) -> np.ndarray:
+        """Возвращает фазу вентиляции [0, 1]: 0 — выдох/апноэ, 1 — вдох.
+
+        Паттерны реализованы только по заданным клиническим формулам. Для ЭИТ
+        симметричный сигнал проводимости переводится в фазу через его отклонение
+        от ненулевого фона; затем фаза управляет проводимостью лёгких.
+        """
+        if len(t) == 0:
+            return np.empty(0, dtype=float)
+
+        baseline = 1.20
+
+        def sine(local_t: np.ndarray, local_period: float, amplitude: float) -> np.ndarray:
+            return amplitude * np.sin(2.0 * np.pi * local_t / local_period)
+
+        if pattern_type == "normal":
+            signal = baseline + sine(t, period=4.2, amplitude=0.45)
+            amplitude_ref = 0.45
+        elif pattern_type == "kussmaul":
+            signal = baseline + sine(t, period=6.2, amplitude=0.85)
+            amplitude_ref = 0.85
+        elif pattern_type == "biot":
+            signal = np.full_like(t, baseline, dtype=float)
+            for start, end, local_period, amplitude in [
+                (5.0, 20.0, 2.70, 0.62),
+                (32.0, 45.0, 2.70, 0.62),
+                (59.0, 77.0, 2.70, 0.62),
+            ]:
+                mask = (t >= start) & (t < end)
+                signal[mask] = baseline + sine(t[mask] - start, local_period, amplitude)
+            amplitude_ref = 0.62
+        elif pattern_type == "cheyne_stokes":
+            signal = np.full_like(t, baseline, dtype=float)
+            for start, end in [(4.0, 30.0), (42.0, 68.0)]:
+                mask = (t >= start) & (t < end)
+                local_t = t[mask] - start
+                envelope = 0.88 * np.sin(np.pi * local_t / (end - start))
+                signal[mask] = baseline + envelope * np.sin(2.0 * np.pi * local_t / 3.6)
+            amplitude_ref = 0.88
+        elif pattern_type in {"agonal", "gasping"}:
+            signal = np.full_like(t, baseline, dtype=float)
+            for center, amplitude, width in [(12.0, 1.00, 1.15), (38.0, 0.78, 0.95), (68.0, 1.12, 1.20)]:
+                x = (t - center) / width
+                gasp = amplitude * x * np.exp(-0.5 * x ** 2)
+                peak = np.max(np.abs(gasp))
+                if peak > 0:
+                    gasp = gasp / peak * amplitude
+                signal += gasp
+            amplitude_ref = 1.12
+        else:
+            raise ValueError(
+                "Неизвестный тип дыхания: "
+                f"{pattern_type}. Допустимы: normal, kussmaul, biot, cheyne_stokes, agonal."
+            )
+
+        # Симметричный относительно baseline сигнал [-A, A] переводится в [0, 1].
+        # В паузах апноэ signal == baseline, поэтому phase == 0.5.
+        return np.clip(0.5 + 0.5 * (signal - baseline) / amplitude_ref, 0.0, 1.0)
+
     def compute_voltages_for_electrodes(electrodes: np.ndarray):
         elec_nodes = find_nearest_nodes(points, electrodes)
         drive = build_drive_pattern(cfg.n_electrodes, cfg.drive_pattern)
-
         dt = 1.0 / cfg.breath_fps
-        n_frames = int(cfg.breath_period_sec * cfg.breath_fps * cfg.breath_n_cycles)
+
+        # Формулы патологических паттернов определены на интервале 0–90 с.
+        # Для normal/kussmaul длительность остаётся задаваемой конфигурацией.
+        if cfg.breathing_type in {"biot", "cheyne_stokes", "agonal", "gasping"}:
+            simulation_duration_sec = 90.0
+        else:
+            simulation_duration_sec = cfg.breath_period_sec * cfg.breath_n_cycles
+        n_frames = max(1, int(round(simulation_duration_sec * cfg.breath_fps)))
+
         sigma_lung_ex = cfg.conductivity["lung_exhale"]
         sigma_lung_in = cfg.conductivity["lung_inhale"]
 
         t = np.arange(n_frames, dtype=float) * dt
-        breath_phase = np.sin(2.0 * np.pi * t / cfg.breath_period_sec)
-        lung_sigma_series = (0.5 * (sigma_lung_ex + sigma_lung_in)
-                             - 0.5 * (sigma_lung_ex - sigma_lung_in) * breath_phase)
+        breath_phase = _generate_breath_pattern(cfg.breathing_type, t, cfg.breath_period_sec)
+        
+        # Единое преобразование: phase=0 соответствует выдоху, phase=1 — вдоху.
+        # У переходов и пауз нет искусственного клиппинга проводимости.
+        lung_sigma_series = (
+            sigma_lung_ex
+            + (sigma_lung_in - sigma_lung_ex) * breath_phase
+        )
 
         sigma_base = assign_conductivity(elem_physicals, cfg, sigma_lung_ex, phys_mapping)
-
         n_meas = cfg.n_electrodes * (cfg.n_electrodes - 2)
         voltages = np.zeros((n_frames, n_meas), dtype=float)
-
+        
         if cfg.save_ground_truth_series:
             sigma_series = np.zeros((n_frames, len(tris)), dtype=np.float32)
             delta_sigma_series = np.zeros((n_frames, len(tris)), dtype=np.float32)
         else:
             sigma_series = None
             delta_sigma_series = None
-
+            
         for f in range(n_frames):
             sigma = sigma_base.copy()
             sigma[lung_mask] = lung_sigma_series[f]
-
+            
             if sigma_series is not None:
                 sigma_series[f] = sigma.astype(np.float32)
                 delta_sigma_series[f] = (sigma - sigma_base).astype(np.float32)
-
+                
             k_global = assemble_stiffness(points, tris, sigma)
-
             row = 0
             for inj, meas_pairs in drive:
                 inj_nodes = (int(elec_nodes[inj[0]]), int(elec_nodes[inj[1]]))
@@ -997,14 +1248,16 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
                 for m_plus, m_minus in meas_pairs:
                     voltages[f, row] = v[m_plus] - v[m_minus]
                     row += 1
-
+                    
             if ((f + 1) % 10 == 0) or (f == 0):
-                print(f"  frame {f + 1}/{n_frames}, σ_lung={lung_sigma_series[f]:.4f} S/m")
-
+                print(f"  frame {f + 1}/{n_frames}, σ_lung={lung_sigma_series[f]:.4f} S/m, phase={breath_phase[f]:.3f}")
+                
         return voltages, breath_phase, sigma_series, delta_sigma_series
 
+
+
     def save_dataset_to_folder(folder_name: str, electrodes, voltages, breath_phase,
-                               sigma_series, delta_sigma_series, plot_type: str):
+                               sigma_series, delta_sigma_series, all_electrodes: dict):
         folder_path = os.path.join(cfg.output_dir, folder_name)
         os.makedirs(folder_path, exist_ok=True)
         print(f"\n[Save] Сохранение в папку: {folder_name}/")
@@ -1072,10 +1325,10 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
                 electrodes_final=electrodes,
                 cfg=cfg,
                 phys_mapping=phys_mapping,
-                electrodes_standard=electrodes_standard if plot_type == "comparison" else None,
-                electrodes_optimized=electrodes_optimized if plot_type == "comparison" else None,
+                all_electrodes=all_electrodes,
                 lung_elems=lung_elems,
                 save_dir=folder_path,
+                folder_name=folder_name,
             )
 
         if cfg.debug_plot_each_class:
@@ -1086,9 +1339,9 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
                 electrodes_final=electrodes,
                 cfg=cfg,
                 phys_mapping=phys_mapping,
-                electrodes_standard=electrodes_standard if plot_type == "comparison" else None,
-                electrodes_optimized=electrodes_optimized if plot_type == "comparison" else None,
+                all_electrodes=all_electrodes,
                 save_dir=folder_path,
+                folder_name=folder_name,
             )
 
         print(f"[Save] ✓ {folder_name}/ сохранён")
@@ -1099,7 +1352,11 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
 
     print("\n[Main] Расчёт напряжений для равномерных электродов...")
     voltages_uni, _, sigma_series_uni, delta_sigma_uni = \
-        compute_voltages_for_electrodes(electrodes_standard)
+        compute_voltages_for_electrodes(electrodes_uniform)
+
+    print("\n[Main] Расчёт напряжений для случайных электродов...")
+    voltages_rand, _, sigma_series_rand, delta_sigma_rand = \
+        compute_voltages_for_electrodes(electrodes_random)
 
     save_dataset_to_folder(
         folder_name="optimized",
@@ -1108,17 +1365,27 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
         breath_phase=breath_phase,
         sigma_series=sigma_series_opt,
         delta_sigma_series=delta_sigma_opt,
-        plot_type="opt",
+        all_electrodes=all_electrodes,
     )
 
     save_dataset_to_folder(
         folder_name="uniform",
-        electrodes=electrodes_standard,
+        electrodes=electrodes_uniform,
         voltages=voltages_uni,
         breath_phase=breath_phase,
         sigma_series=sigma_series_uni,
         delta_sigma_series=delta_sigma_uni,
-        plot_type="comparison",
+        all_electrodes=all_electrodes,
+    )
+
+    save_dataset_to_folder(
+        folder_name="random",
+        electrodes=electrodes_random,
+        voltages=voltages_rand,
+        breath_phase=breath_phase,
+        sigma_series=sigma_series_rand,
+        delta_sigma_series=delta_sigma_rand,
+        all_electrodes=all_electrodes,
     )
 
     save_dataset_to_folder(
@@ -1128,12 +1395,13 @@ def generate_eit_dataset(list_crd: List[str], cfg: EITConfig = None, use_optimiz
         breath_phase=None,
         sigma_series=None,
         delta_sigma_series=None,
-        plot_type="no_elec",
+        all_electrodes=all_electrodes,
     )
 
-    print(f"\n[Main] ✓ Все три датасета сохранены в {cfg.output_dir}")
+    print(f"\n[Main] ✓ Все датасеты сохранены в {cfg.output_dir}")
     print(f"  - optimized/       (оптимизированные электроды)")
     print(f"  - uniform/         (равномерные)")
+    print(f"  - random/          (случайные)") 
     print(f"  - no_electrodes/   (только mesh)")
 
 

@@ -19,9 +19,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-dicom_dataset_dir = '/media/msi/fsi/fsi/datasets_mrt/all_data_dicom'
+dicom_dataset_dir = '/media/msi/SSD_1_TB15/NPI/exp_npi_fsi/Электроды/all_data_dicom'
 
-path_to_save_dicom = f'../../save_test_masks/'
+path_to_save_dicom = f'/media/msi/SSD_1_TB15/NPI/exp_npi_fsi/Электроды/save_test_masks'
 dicom_seq_to_mask = DICOMSequencesToMask()
 
 
